@@ -17,10 +17,12 @@ TODAY = "2026-10-01"
 MESSAGES = ["1", "2", "3"]
 
 SETTINGS = {
-    "danmaku": {"on_live": ["晚好"], "after_offline": MESSAGES,
+    "danmaku": {"enabled": True, "on_live": ["晚好"], "after_offline": MESSAGES,
                 "interval": {"min": 3, "max": 12}},
-    "like": {"target": 500, "batch": 10, "interval": {"min": 1.0, "max": 3.0}},
+    "like": {"enabled": True, "target": 500, "batch": 10,
+             "interval": {"min": 1.0, "max": 3.0}},
     "share": {"on_live": True, "after_offline": True},
+    "night_light": {"enabled": True},
 }
 
 MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
@@ -28,7 +30,8 @@ MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
 CONFIG = {"members": [MEMBER], "active_hours": {"start": 21, "end": 1}, "settings": SETTINGS}
 
 
-def _settings(share=None, messages=None, interval=None):
+def _settings(share=None, messages=None, interval=None,
+              danmaku_enabled=None, night_light_enabled=None):
     s = json.loads(json.dumps(SETTINGS))
     if share is not None:
         s["share"] = share
@@ -36,6 +39,10 @@ def _settings(share=None, messages=None, interval=None):
         s["danmaku"]["after_offline"] = messages
     if interval is not None:
         s["danmaku"]["interval"] = interval
+    if danmaku_enabled is not None:
+        s["danmaku"]["enabled"] = danmaku_enabled
+    if night_light_enabled is not None:
+        s["night_light"]["enabled"] = night_light_enabled
     return s
 
 
@@ -217,6 +224,17 @@ class LightMemberTests(_StateFixture):
         self.assertEqual([c["msg"] for c in client.danmaku_calls], ["晚安"])
         self.assertEqual(self.sleeps, [])
 
+    def test_danmaku_disabled_share_only(self):
+        """danmaku.enabled=false：只分享，且照样收尾成 done，免得每 5 分钟重来。"""
+        client = FakeClient()
+        result = self.run_light(client, _settings(danmaku_enabled=False))
+
+        self.assertEqual(client.share_calls, [281])
+        self.assertEqual(client.danmaku_calls, [])
+        self.assertTrue(result["done"])
+        self.assertEqual(result["reason"], "弹幕已关闭，只分享")
+        self.assertTrue(night_light.load_state(281, TODAY)["done"])
+
 
 class MainTests(_StateFixture):
     def setUp(self):
@@ -240,6 +258,15 @@ class MainTests(_StateFixture):
         client.live = {281: {"live_status": 0}}
         self.assertEqual(self._run(client), 0)
         self.assertEqual(len(client.danmaku_calls), 3)
+
+    def test_disabled_in_config_makes_no_request(self):
+        """night_light.enabled=false：整段不做，连直播状态都不查。"""
+        client = FakeClient()
+        config = json.loads(json.dumps(CONFIG))
+        config["settings"]["night_light"]["enabled"] = False
+        self.assertEqual(self._run(client, config=config), 0)
+        self.assertEqual(client.danmaku_calls, [])
+        self.assertEqual(client.share_calls, [])
 
     def test_skips_while_still_live(self):
         """硬规则：在直播就什么都不发，也不会被记成一次失败。"""

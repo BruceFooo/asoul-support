@@ -176,6 +176,8 @@ def start_like(member: dict, settings: dict) -> Optional[int]:
     白起一个进程（每次都会打一次直播状态接口）。
     """
     name, room = member["name"], member["room"]
+    if not settings["like"]["enabled"]:
+        return None
     target = settings["like"]["target"]
     lock_file = LIKE_LOCK_DIR / f"{room}.lock"
 
@@ -194,7 +196,8 @@ def start_like(member: dict, settings: dict) -> Optional[int]:
     return pid
 
 
-def run_night_light(targets: List[dict], only_names: Optional[str] = None) -> int:
+def run_night_light(targets: List[dict], settings: dict,
+                    only_names: Optional[str] = None) -> int:
     """睡眠时段的下播点亮：同步跑一次 night_light。
 
     同步而不是后台：最长也就 10 条弹幕 × 12 秒，远小于 5 分钟的调度间隔，
@@ -202,6 +205,9 @@ def run_night_light(targets: List[dict], only_names: Optional[str] = None) -> in
     在直播的房间由 night_light 自己跳过，所以每 5 分钟跑一次就是「一直等，下播就发」。
     """
     if not targets:
+        return 0
+    if not settings["night_light"]["enabled"]:
+        print("  🌙 下播点亮已在配置中关闭，跳过。")
         return 0
     cmd = [sys.executable, NIGHT_LIGHT_SCRIPT]
     if only_names:
@@ -211,6 +217,25 @@ def run_night_light(targets: List[dict], only_names: Optional[str] = None) -> in
     if result.returncode != 0:
         print(f"  ⚠️  下播点亮退出码 {result.returncode}，详见上面的输出")
     return 0
+
+
+def report_disabled(settings: dict) -> None:
+    """把配置里关掉的行为报一遍。
+
+    开关拨了却没反应时，最容易怀疑是程序坏了。在每轮巡检的开头明说一句，
+    日志里就能直接看出「不是没跑，是你关了」。
+    """
+    off = []
+    if not settings["danmaku"]["enabled"]:
+        off.append("弹幕")
+    if not settings["like"]["enabled"]:
+        off.append("点赞")
+    if not settings["night_light"]["enabled"]:
+        off.append("下播点亮")
+    if not settings["share"]["on_live"] and not settings["share"]["after_offline"]:
+        off.append("分享")
+    if off:
+        print(f"  配置中已关闭：{'、'.join(off)}")
 
 
 def parse_args():
@@ -257,11 +282,12 @@ def main() -> int:
         print(f"当前 {hour:02d}:00 不在活跃时段 {start:02d}:00-{end:02d}:00，进入睡眠。")
         stop_locked_members(LOCK_DIR, "离开活跃时段")
         stop_locked_members(LIKE_LOCK_DIR, "离开活跃时段")
-        run_night_light(targets, only_names=args.members)
+        run_night_light(targets, config["settings"], only_names=args.members)
         return 0
 
     print(f"活跃时段 {start:02d}:00-{end:02d}:00（当前 {hour:02d}:00），"
           f"监听成员：{', '.join(m['name'] for m in targets)}")
+    report_disabled(config["settings"])
 
     # 配置是唯一数据源：成员被删除 / 房间号被改动后，旧房间的挂机进程不该继续跑。
     # 比较的是全量配置 all_members 而不是本轮的 targets——--members 只是临时筛选，

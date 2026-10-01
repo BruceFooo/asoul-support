@@ -173,6 +173,10 @@ def main() -> int:
                   f"每次上报 {like['batch']} 次，间隔 {like['interval']['min']}-{like['interval']['max']}s")
         return 0
 
+    if not like["enabled"]:
+        print("点赞已在配置中关闭（like.enabled = false），退出。")
+        return 0
+
     cookies = load_cookies()
     if not cookies:
         print("ERROR: 找不到可用的 .cookies.json（需要 SESSDATA 与 bili_jct）。")

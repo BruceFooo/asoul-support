@@ -196,6 +196,27 @@ class SettingsTests(_ConfigFixture):
         self.assertEqual(s["like"]["batch"], 10)
         self.assertEqual(s["like"]["interval"], {"min": 1.0, "max": 3.0})
         self.assertEqual(s["share"], {"on_live": True, "after_offline": True})
+        # 三个开关缺省都是开着的——默认行为不该因为配置文件里没写就悄悄变
+        self.assertTrue(s["danmaku"]["enabled"])
+        self.assertTrue(s["like"]["enabled"])
+        self.assertTrue(s["night_light"]["enabled"])
+
+    def test_enabled_flags_can_be_turned_off(self):
+        s = self._settings(
+            danmaku={"enabled": False},
+            like={"enabled": False},
+            night_light={"enabled": False},
+        )
+        self.assertFalse(s["danmaku"]["enabled"])
+        self.assertFalse(s["like"]["enabled"])
+        self.assertFalse(s["night_light"]["enabled"])
+
+    def test_enabled_must_be_a_bool(self):
+        for section in ("danmaku", "like", "night_light"):
+            with self.subTest(section=section):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._settings(**{section: {"enabled": "yes"}})
+                self.assertIn(f"{section}.enabled", str(ctx.exception))
 
     def test_partial_danmaku_falls_back_per_field(self):
         s = self._settings(danmaku={"interval": {"min": 5, "max": 9}})

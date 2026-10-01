@@ -76,6 +76,8 @@ def _parse_hours(raw) -> Dict[str, int]:
 
 _DEFAULT_SETTINGS = {
     "danmaku": {
+        # false = 一条弹幕都不发（开播问候与下播点亮都只分享、不发弹幕）
+        "enabled": True,
         # 开播时发的一条
         "on_live": ["晚好"],
         # 下播/未开播时发的编号弹幕
@@ -83,6 +85,8 @@ _DEFAULT_SETTINGS = {
         "interval": {"min": 3, "max": 12},
     },
     "like": {
+        # false = 完全不起点赞进程
+        "enabled": True,
         # 直播间点赞不涨亲密度、只加热度，且 B 站有未知的每日上限。
         # 默认取一个「一晚能点满、不至于整晚空转刷接口」的值，实测后可上调。
         "target": 500,
@@ -93,6 +97,10 @@ _DEFAULT_SETTINGS = {
         "interval": {"min": 1.0, "max": 3.0},
     },
     "share": {"on_live": True, "after_offline": True},
+    "night_light": {
+        # false = 下播点亮整段不做（不分享也不发弹幕）
+        "enabled": True,
+    },
 }
 
 
@@ -130,16 +138,18 @@ def _bool_setting(raw, where: str) -> bool:
 
 
 def _parse_settings(data: Dict) -> Dict:
-    """把 danmaku / like / share 三段与默认值合并，并校验。三段都可整段省略。"""
+    """把 danmaku / like / share / night_light 四段与默认值合并，并校验。四段都可整段省略。"""
     raw = {key: data.get(key, {}) for key in _DEFAULT_SETTINGS}
     for key, value in raw.items():
         if not isinstance(value, dict):
             raise _fail(f"{key} 必须是对象")
 
-    danmaku_raw, like_raw, share_raw = raw["danmaku"], raw["like"], raw["share"]
+    danmaku_raw, like_raw = raw["danmaku"], raw["like"]
+    share_raw, nl_raw = raw["share"], raw["night_light"]
     d_def = _DEFAULT_SETTINGS["danmaku"]
     l_def = _DEFAULT_SETTINGS["like"]
     s_def = _DEFAULT_SETTINGS["share"]
+    n_def = _DEFAULT_SETTINGS["night_light"]
 
     target = like_raw.get("target", l_def["target"])
     if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
@@ -151,6 +161,8 @@ def _parse_settings(data: Dict) -> Dict:
 
     return {
         "danmaku": {
+            "enabled": _bool_setting(danmaku_raw.get("enabled", d_def["enabled"]),
+                                     "danmaku.enabled"),
             "on_live": _messages(danmaku_raw.get("on_live", d_def["on_live"]),
                                  "danmaku.on_live"),
             "after_offline": _messages(danmaku_raw.get("after_offline", d_def["after_offline"]),
@@ -159,6 +171,8 @@ def _parse_settings(data: Dict) -> Dict:
                                   "danmaku.interval"),
         },
         "like": {
+            "enabled": _bool_setting(like_raw.get("enabled", l_def["enabled"]),
+                                     "like.enabled"),
             "target": target,
             "batch": batch,
             "interval": _interval(like_raw.get("interval", l_def["interval"]),
@@ -168,6 +182,10 @@ def _parse_settings(data: Dict) -> Dict:
             "on_live": _bool_setting(share_raw.get("on_live", s_def["on_live"]), "share.on_live"),
             "after_offline": _bool_setting(
                 share_raw.get("after_offline", s_def["after_offline"]), "share.after_offline"),
+        },
+        "night_light": {
+            "enabled": _bool_setting(nl_raw.get("enabled", n_def["enabled"]),
+                                     "night_light.enabled"),
         },
     }
 

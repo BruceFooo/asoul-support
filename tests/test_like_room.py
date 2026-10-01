@@ -16,9 +16,12 @@ import like_room  # noqa: E402
 TODAY = "2026-10-01"
 
 SETTINGS = {
-    "danmaku": {"on_live": ["晚好"], "after_offline": ["1"], "interval": {"min": 3, "max": 12}},
-    "like": {"target": 25, "batch": 10, "interval": {"min": 1.0, "max": 3.0}},
+    "danmaku": {"enabled": True, "on_live": ["晚好"], "after_offline": ["1"],
+                "interval": {"min": 3, "max": 12}},
+    "like": {"enabled": True, "target": 25, "batch": 10,
+             "interval": {"min": 1.0, "max": 3.0}},
     "share": {"on_live": True, "after_offline": True},
+    "night_light": {"enabled": True},
 }
 
 MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
@@ -257,10 +260,10 @@ class MainTests(_StateFixture):
         sleeper.start()
         self.addCleanup(sleeper.stop)
 
-    def _run(self, client, argv=()):
+    def _run(self, client, argv=(), settings=None):
         with patch.object(sys, "argv", ["like_room.py", *argv]), \
                 patch.object(like_room, "load_members", return_value=[MEMBER, dict(MEMBER, name="甲", room=999)]), \
-                patch.object(like_room, "load_settings", return_value=_settings()), \
+                patch.object(like_room, "load_settings", return_value=settings or _settings()), \
                 patch.object(like_room, "load_cookies", return_value={"SESSDATA": "s", "bili_jct": "j"}), \
                 patch.object(like_room, "LiveClient", return_value=client):
             return like_room.main()
@@ -270,6 +273,13 @@ class MainTests(_StateFixture):
         client.live = {281: {"live_status": 1}, 999: {"live_status": 0}}
         self.assertEqual(self._run(client), 0)
         self.assertEqual([c["room"] for c in client.like_calls], [281] * 3)
+
+    def test_disabled_in_config_makes_no_request(self):
+        """like.enabled=false：手动跑也什么都不做。"""
+        client = FakeClient()
+        client.live = {281: {"live_status": 1}, 999: {"live_status": 0}}
+        self.assertEqual(self._run(client, settings=_settings(enabled=False)), 0)
+        self.assertEqual(client.like_calls, [])
 
     def test_no_cookies_is_an_error(self):
         client = FakeClient()

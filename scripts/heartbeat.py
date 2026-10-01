@@ -218,6 +218,7 @@ def open_live_greeting(room_id: int, sessdata: str, bili_jct: str,
     danmaku = SETTINGS.get("danmaku") or {}
     messages = danmaku.get("on_live") or ["晚好"]
     share_on = (SETTINGS.get("share") or {}).get("on_live", True)
+    danmaku_on = danmaku.get("enabled", True)
 
     client = LiveClient(sessdata, bili_jct)
 
@@ -229,6 +230,12 @@ def open_live_greeting(room_id: int, sessdata: str, bili_jct: str,
             print("    🔗 已分享直播间", file=sys.stderr)
         else:
             print(f"    ⚠️  分享失败：{resp.get('code')} {resp.get('message')}", file=sys.stderr)
+
+    if not danmaku_on:
+        state["greeted"] = True
+        save_greeting_state(room_id, state)
+        print("    💬 弹幕已在配置中关闭，只分享", file=sys.stderr)
+        return True
 
     msg = random.choice(messages)
     resp = client.send_danmaku(room_id, msg)

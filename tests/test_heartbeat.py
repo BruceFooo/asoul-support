@@ -123,9 +123,10 @@ class FakeClient:
 
 
 SETTINGS = {
-    "danmaku": {"on_live": ["晚好"], "after_offline": ["1"],
+    "danmaku": {"enabled": True, "on_live": ["晚好"], "after_offline": ["1"],
                 "interval": {"min": 3, "max": 12}},
     "share": {"on_live": True, "after_offline": True},
+    "night_light": {"enabled": True},
 }
 
 TODAY = "2026-10-01"
@@ -196,6 +197,15 @@ class GreetingTests(unittest.TestCase):
 
         self.assertFalse(self.greet())  # 第 N+1 次直接放弃，不再请求
         self.assertEqual(len(self.client.danmaku_calls), attempts)
+
+    def test_danmaku_disabled_still_shares(self):
+        """danmaku.enabled=false：只分享，且照样记成「今晚已问候」，不反复重试。"""
+        heartbeat.SETTINGS["danmaku"]["enabled"] = False
+        self.assertTrue(self.greet())
+
+        self.assertEqual(self.client.share_calls, [ROOM])
+        self.assertEqual(self.client.danmaku_calls, [])
+        self.assertTrue(heartbeat.load_greeting_state(ROOM, TODAY)["greeted"])
 
     def test_share_disabled_by_config(self):
         heartbeat.SETTINGS["share"] = {"on_live": False, "after_offline": True}

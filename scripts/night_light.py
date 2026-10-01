@@ -127,7 +127,8 @@ def light_member(client: LiveClient, member: Dict, settings: Dict, *,
         state["shared"] = True
         save_state(room, state)
 
-    remaining = messages[state["sent"]:]
+    # danmaku.enabled=false 时只分享、不发弹幕；进度照样收尾成 done，免得每 5 分钟重来。
+    remaining = messages[state["sent"]:] if danmaku.get("enabled", True) else []
     for index, msg in enumerate(remaining):
         resp = client.send_danmaku(room, msg)
         if resp.get("code") != 0:
@@ -143,7 +144,8 @@ def light_member(client: LiveClient, member: Dict, settings: Dict, *,
 
     state["done"] = True
     save_state(room, state)
-    return _result(member, state, len(messages), "已发送完毕")
+    reason = "已发送完毕" if remaining else "弹幕已关闭，只分享"
+    return _result(member, state, len(messages), reason)
 
 
 def parse_args():
@@ -178,6 +180,10 @@ def main() -> int:
         return 1
 
     settings = config["settings"]
+    if not settings["night_light"]["enabled"]:
+        print("下播点亮已在配置中关闭（night_light.enabled = false），退出。")
+        return 0
+
     start, end = config["active_hours"]["start"], config["active_hours"]["end"]
     hour = local_hour()
     if in_active_window(hour, start, end) and not args.force:

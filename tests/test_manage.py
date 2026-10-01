@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import tempfile
@@ -240,7 +241,8 @@ class StartHeartbeatTests(_LockFixture):
 
 class StartLikeTests(_LockFixture):
     MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
-    SETTINGS = {"like": {"target": 500, "batch": 10, "interval": {"min": 1.0, "max": 3.0}}}
+    SETTINGS = {"like": {"enabled": True, "target": 500, "batch": 10,
+                         "interval": {"min": 1.0, "max": 3.0}}}
 
     def test_starts_when_progress_unfinished(self):
         with patch.object(mgr.subprocess, "Popen") as popen:
@@ -272,32 +274,83 @@ class StartLikeTests(_LockFixture):
             self.assertEqual(mgr.start_like(self.MEMBER, self.SETTINGS), 1)
         popen.assert_called_once()
 
+    def test_disabled_in_config_does_not_spawn(self):
+        """like.enabled=false：连查进度都不做，直接不起进程。"""
+        settings = json.loads(json.dumps(self.SETTINGS))
+        settings["like"]["enabled"] = False
+        with patch.object(mgr.like_room, "is_done") as done, \
+             patch.object(mgr.subprocess, "Popen") as popen:
+            self.assertIsNone(mgr.start_like(self.MEMBER, settings))
+        popen.assert_not_called()
+        done.assert_not_called()
+
 
 class RunNightLightTests(unittest.TestCase):
     MEMBERS = [{"name": "枯水", "uid": 699438, "room": 281}]
+    SETTINGS = {"night_light": {"enabled": True}}
+
+    def run_night(self, members=None, settings=None, **kwargs):
+        return mgr.run_night_light(self.MEMBERS if members is None else members,
+                                   settings or self.SETTINGS, **kwargs)
 
     def test_runs_the_script(self):
         with patch.object(mgr.subprocess, "run") as run:
             run.return_value.returncode = 0
-            self.assertEqual(mgr.run_night_light(self.MEMBERS), 0)
+            self.assertEqual(self.run_night(), 0)
         cmd = run.call_args[0][0]
         self.assertTrue(any("night_light.py" in part for part in cmd))
 
     def test_forwards_member_filter(self):
         with patch.object(mgr.subprocess, "run") as run:
-            mgr.run_night_light(self.MEMBERS, only_names="枯水")
+            self.run_night(only_names="枯水")
         self.assertEqual(run.call_args[0][0][-2:], ["--members", "枯水"])
 
     def test_no_members_is_a_noop(self):
         with patch.object(mgr.subprocess, "run") as run:
-            self.assertEqual(mgr.run_night_light([]), 0)
+            self.assertEqual(self.run_night(members=[]), 0)
         run.assert_not_called()
 
     def test_child_failure_does_not_fail_the_whole_run(self):
         """点亮是尽力而为的附加功能，不该把整个调度任务标成失败。"""
         with patch.object(mgr.subprocess, "run") as run:
             run.return_value.returncode = 1
-            self.assertEqual(mgr.run_night_light(self.MEMBERS), 0)
+            self.assertEqual(self.run_night(), 0)
+
+    def test_disabled_in_config_skips_the_subprocess(self):
+        with patch.object(mgr.subprocess, "run") as run:
+            self.assertEqual(self.run_night(settings={"night_light": {"enabled": False}}), 0)
+        run.assert_not_called()
+
+
+class ReportDisabledTests(unittest.TestCase):
+    """开关拨了却没反应时最容易怀疑程序坏了，所以每轮巡检都要把关掉的行为念一遍。"""
+
+    def _report(self, **overrides):
+        settings = json.loads(json.dumps(CONFIG["settings"]))
+        settings.update({k: json.loads(json.dumps(v)) for k, v in overrides.items()})
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            mgr.report_disabled(settings)
+        return out.getvalue()
+
+    def test_all_on_prints_nothing(self):
+        self.assertEqual(self._report(), "")
+
+    def test_lists_each_disabled_behaviour(self):
+        out = self._report(
+            danmaku={"enabled": False, "on_live": ["晚好"], "after_offline": ["1"],
+                     "interval": {"min": 3, "max": 12}},
+            like={"enabled": False, "target": 500, "batch": 10,
+                  "interval": {"min": 1.0, "max": 3.0}},
+            night_light={"enabled": False},
+        )
+        for word in ("弹幕", "点赞", "下播点亮"):
+            self.assertIn(word, out)
+
+    def test_share_only_reported_when_both_sides_are_off(self):
+        half = self._report(share={"on_live": False, "after_offline": True})
+        both = self._report(share={"on_live": False, "after_offline": False})
+        self.assertNotIn("分享", half)
+        self.assertIn("分享", both)
 
 
 MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
@@ -305,10 +358,12 @@ CONFIG = {
     "members": [MEMBER],
     "active_hours": {"start": 21, "end": 1},
     "settings": {
-        "danmaku": {"on_live": ["晚好"], "after_offline": ["1"],
+        "danmaku": {"enabled": True, "on_live": ["晚好"], "after_offline": ["1"],
                     "interval": {"min": 3, "max": 12}},
-        "like": {"target": 500, "batch": 10, "interval": {"min": 1.0, "max": 3.0}},
+        "like": {"enabled": True, "target": 500, "batch": 10,
+                 "interval": {"min": 1.0, "max": 3.0}},
         "share": {"on_live": True, "after_offline": True},
+        "night_light": {"enabled": True},
     },
 }
 
@@ -356,13 +411,15 @@ class MainWiringTests(_LockFixture):
         self.assertEqual(rc, 0)
         hb.assert_not_called()
         like.assert_not_called()
-        night.assert_called_once_with([MEMBER], only_names=None)
+        night.assert_called_once_with([MEMBER], CONFIG["settings"], only_names=None)
 
     def test_missing_cookie_is_an_error(self):
         self.cookie.unlink()
         rc, hb, like, night = self._run(hour=22, live=True)
         self.assertEqual(rc, 1)
         hb.assert_not_called()
+        like.assert_not_called()
+        night.assert_not_called()
 
     def test_ignore_window_forces_the_active_branch(self):
         """--ignore-window 在睡眠时段也要挂机（手动补挂用）。"""
