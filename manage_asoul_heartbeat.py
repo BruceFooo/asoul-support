@@ -235,6 +235,8 @@ def report_disabled(settings: dict) -> None:
         off.append("下播点亮")
     if not settings["share"]["on_live"] and not settings["share"]["after_offline"]:
         off.append("分享")
+    if not settings["notify"]["enabled"]:
+        off.append("Discord 通知")
     if off:
         print(f"  配置中已关闭：{'、'.join(off)}")
 

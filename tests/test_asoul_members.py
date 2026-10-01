@@ -180,7 +180,7 @@ class RequireRoomTests(_ConfigFixture):
 
 
 class SettingsTests(_ConfigFixture):
-    """danmaku / like / share 三段都可选，缺省用内置默认值。"""
+    """danmaku / like / share / night_light / notify 五段都可选，缺省用内置默认值。"""
 
     def _settings(self, **extra):
         self.write_config({"members": [JARAN], **extra})
@@ -197,10 +197,14 @@ class SettingsTests(_ConfigFixture):
         self.assertEqual(s["like"]["interval"], {"min": 1.0, "max": 3.0})
         self.assertEqual(s["share"], {"on_live": True, "after_offline": True})
         self.assertEqual(s["night_light"]["after_hour"], 1)
-        # 三个开关缺省都是开着的——默认行为不该因为配置文件里没写就悄悄变
+        # 三个行为开关缺省都是开着的——默认行为不该因为配置文件里没写就悄悄变
         self.assertTrue(s["danmaku"]["enabled"])
         self.assertTrue(s["like"]["enabled"])
         self.assertTrue(s["night_light"]["enabled"])
+
+    def test_notify_is_off_by_default(self):
+        """通知是唯一缺省为「关」的开关：靠外部 openclaw CLI，不该默认就往外发。"""
+        self.assertFalse(self._settings()["notify"]["enabled"])
 
     def test_enabled_flags_can_be_turned_off(self):
         s = self._settings(
@@ -212,8 +216,12 @@ class SettingsTests(_ConfigFixture):
         self.assertFalse(s["like"]["enabled"])
         self.assertFalse(s["night_light"]["enabled"])
 
+    def test_notify_can_be_turned_on(self):
+        s = self._settings(notify={"enabled": True})
+        self.assertTrue(s["notify"]["enabled"])
+
     def test_enabled_must_be_a_bool(self):
-        for section in ("danmaku", "like", "night_light"):
+        for section in ("danmaku", "like", "night_light", "notify"):
             with self.subTest(section=section):
                 with self.assertRaises(ConfigError) as ctx:
                     self._settings(**{section: {"enabled": "yes"}})

@@ -16,5 +16,6 @@
     "interval": { "min": 1.0, "max": 3.0 }
   },
   "share": { "on_live": true, "after_offline": true },
-  "night_light": { "enabled": true, "after_hour": 1 }
+  "night_light": { "enabled": true, "after_hour": 1 },
+  "notify": { "enabled": false }
 }

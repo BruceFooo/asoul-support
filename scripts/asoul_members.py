@@ -99,6 +99,11 @@ _DEFAULT_SETTINGS = {
         # 拖到挂机时段结束才做。
         "after_hour": 1,
     },
+    "notify": {
+        # false = 不发 Discord 开播/下播通知。默认关：通知靠外部的 openclaw CLI，
+        # 没装 / 没登录的环境只会白起一个进程，不如让需要的人自己开。
+        "enabled": False,
+    },
 }
 
 
@@ -142,7 +147,10 @@ def _hour(raw, where: str) -> int:
 
 
 def _parse_settings(data: Dict) -> Dict:
-    """把 danmaku / like / share / night_light 四段与默认值合并，并校验。四段都可整段省略。"""
+    """把 danmaku / like / share / night_light / notify 五段与默认值合并，并校验。
+
+    五段都可整段省略，缺省用内置默认值（notify 是唯一缺省为「关」的一段）。
+    """
     raw = {key: data.get(key, {}) for key in _DEFAULT_SETTINGS}
     for key, value in raw.items():
         if not isinstance(value, dict):
@@ -150,10 +158,12 @@ def _parse_settings(data: Dict) -> Dict:
 
     danmaku_raw, like_raw = raw["danmaku"], raw["like"]
     share_raw, nl_raw = raw["share"], raw["night_light"]
+    notify_raw = raw["notify"]
     d_def = _DEFAULT_SETTINGS["danmaku"]
     l_def = _DEFAULT_SETTINGS["like"]
     s_def = _DEFAULT_SETTINGS["share"]
     n_def = _DEFAULT_SETTINGS["night_light"]
+    nt_def = _DEFAULT_SETTINGS["notify"]
 
     target = like_raw.get("target", l_def["target"])
     if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
@@ -193,6 +203,10 @@ def _parse_settings(data: Dict) -> Dict:
             "after_hour": _hour(nl_raw.get("after_hour", n_def["after_hour"]),
                                 "night_light.after_hour"),
         },
+        "notify": {
+            "enabled": _bool_setting(
+                notify_raw.get("enabled", nt_def["enabled"]), "notify.enabled"),
+        },
     }
 
 
@@ -220,7 +234,7 @@ def load_config() -> Dict:
 
 
 def load_settings() -> Dict:
-    """只取弹幕 / 点赞 / 分享 / 下播点亮四段设置（已填好默认值并校验）。"""
+    """只取弹幕 / 点赞 / 分享 / 下播点亮 / 通知五段设置（已填好默认值并校验）。"""
     return load_config()["settings"]
 
 

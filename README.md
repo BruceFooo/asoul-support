@@ -22,7 +22,7 @@
 ---
 
 > **本 fork 与上游的差别**
-> fork 自 `XiaoYiWeio/asoul-support`。上游只有「挂机心跳 + 视频/动态点赞」，成员名单写死在代码里；本 fork 重构成**三事件调度器**——成员表收到 `.asoul_config.json`，新增直播间点赞与下播点亮两个行为，调度器按事件管理挂机/点赞子进程（独立于计划任务存活到下播或点满）。三个行为各带 `enabled` 开关，开播问候与下播点亮每晚只发一次，重启不重发。
+> fork 自 `XiaoYiWeio/asoul-support`。上游只有「挂机心跳 + 视频/动态点赞」，成员名单写死在代码里；本 fork 重构成**三事件调度器**——成员表收到 `.asoul_config.json`，新增直播间点赞与下播点亮两个行为，调度器按事件管理挂机/点赞子进程（独立于计划任务存活到下播或点满）。三个行为各带 `enabled` 开关，开播问候与下播点亮每晚只发一次，重启不重发；Discord 通知也收进了配置（`notify.enabled`，缺省关）。
 
 ## 🚀 一句话安装
 
@@ -55,6 +55,7 @@
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| **v4.3** | 2026-10-01 | Discord 通知收进配置：新增 `notify.enabled`，**缺省关闭**（原先硬编码一直发） |
 | **v4.2** | 2026-10-01 | 按事件重构调度：开播问候（分享 + 1 条弹幕）、开播点赞（点满停）、下播点亮（分享 + 10 条弹幕，每晚一次）；弹幕/点赞/分享全部可在配置里调 |
 | **v4.1.1** | 2026-07-27 | 修复 X25Kn 心跳时间漂移和失败链恢复；新增亲密度增量记录与登录预检；GitHub Actions 升级到 Node 24 运行时 |
 | **v4.1** | 2026-05-28 | 心跳协议升级为 **X25Kn E/X**（HMAC 链式签名），替代已失效的 `mobileHeartBeat`；自动获取 LIVE_BUVID；GitHub Action 频率降低以减少风控 |
@@ -246,7 +247,7 @@ python3 scripts/videos.py --days 7 --coin --fav
 
 | 文件 | 作用 |
 |------|------|
-| `.asoul_config.json` | **唯一的数据源**：`members` + `active_hours` + 行为设置 `danmaku` / `like` / `share` / `night_light`（含各自开关）。已纳入 git（内容不含任何密钥） |
+| `.asoul_config.json` | **唯一的数据源**：`members` + `active_hours` + 行为设置 `danmaku` / `like` / `share` / `night_light` / `notify`（含各自开关，`notify` 缺省关）。已纳入 git（内容不含任何密钥） |
 | `scripts/asoul_members.py` | 读取并校验上面这个配置的共享模块 |
 | `scripts/live_api.py` | 所有直播接口（弹幕 / 点赞 / 分享 / 直播状态）的唯一实现 |
 | `scripts/wbi.py` | 点赞接口要用的 WBI 签名 |
@@ -305,11 +306,15 @@ python3 scripts/videos.py --days 7 --coin --fav
     "enabled": true,
     "after_hour": 1      // 几点之后开始查。与 active_hours 解耦：挂机 19→4 时
                          // 1 点一到就查，不必等挂机时段整个结束（4 点）才做
-  }
+  },
+
+  // 开播/下播的 Discord 通知。走外部的 openclaw CLI，缺省 false
+  "notify": { "enabled": false }
 }
 ```
 
-四段都可以整段省略，用内置默认值；三个 `enabled` 缺省都是 `true`，`after_hour` 缺省 `1`。
+五段都可以整段省略，用内置默认值；`danmaku` / `like` / `night_light` 三个 `enabled` 缺省 `true`，
+`notify.enabled` 缺省 `false`（要收通知得自己打开），`after_hour` 缺省 `1`。
 配置文件**缺失或格式非法直接报错退出**，不会静默回退到内置名单。
 
 所有开关的状态每轮巡检都会写进日志（`配置中已关闭：弹幕、点赞`），

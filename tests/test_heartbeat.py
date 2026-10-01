@@ -232,5 +232,40 @@ class GreetingTests(unittest.TestCase):
         self.assertEqual(len(self.client.danmaku_calls), 1)
 
 
+class NotifyTests(unittest.TestCase):
+    """Discord 通知由 notify.enabled 控制，缺省关闭——配置里没写就不该往外发。"""
+
+    def setUp(self):
+        patcher = patch.object(heartbeat.subprocess, "run")
+        self.run = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def notify(self, settings):
+        with patch.object(heartbeat, "SETTINGS", settings):
+            heartbeat._notify("🔴 测试通知")
+
+    def test_no_settings_sends_nothing(self):
+        """SETTINGS 还没加载（空 dict）时不该发。"""
+        self.notify({})
+        self.run.assert_not_called()
+
+    def test_disabled_sends_nothing(self):
+        self.notify({"notify": {"enabled": False}})
+        self.run.assert_not_called()
+
+    def test_enabled_sends_to_discord(self):
+        self.notify({"notify": {"enabled": True}})
+        argv = self.run.call_args.args[0]
+        self.assertEqual(argv[:3], ["openclaw", "message", "send"])
+        self.assertEqual(argv[argv.index("--channel") + 1], "discord")
+        self.assertEqual(argv[argv.index("--target") + 1], heartbeat._DISCORD_TARGET)
+        self.assertEqual(argv[argv.index("--message") + 1], "🔴 测试通知")
+
+    def test_missing_openclaw_does_not_raise(self):
+        """没装 openclaw 只是收不到通知，不能因此打断挂机。"""
+        self.run.side_effect = FileNotFoundError("openclaw")
+        self.notify({"notify": {"enabled": True}})
+
+
 if __name__ == "__main__":
     unittest.main()

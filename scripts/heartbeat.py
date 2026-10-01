@@ -30,7 +30,13 @@ _DISCORD_TARGET = "user:1479415368249507881"
 
 
 def _notify(msg: str):
-    """发送 Discord 通知"""
+    """按配置发送 Discord 通知（`notify.enabled` 默认关闭）。
+
+    关掉时直接返回，连 openclaw 进程都不起——通知是一次性外部副作用，
+    不值得为它在每个模式下都留一条分支；判断集中在入口这里。
+    """
+    if not SETTINGS.get("notify", {}).get("enabled", False):
+        return
     try:
         subprocess.run(
             ["openclaw", "message", "send",

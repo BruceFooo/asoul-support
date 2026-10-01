@@ -346,6 +346,11 @@ class ReportDisabledTests(unittest.TestCase):
         for word in ("弹幕", "点赞", "下播点亮"):
             self.assertIn(word, out)
 
+    def test_notify_reported_when_off(self):
+        """通知缺省是关的，日志里得能一眼看出「不是没跑，是你关了」。"""
+        self.assertEqual(self._report(notify={"enabled": False}),
+                         "  配置中已关闭：Discord 通知\n")
+
     def test_share_only_reported_when_both_sides_are_off(self):
         half = self._report(share={"on_live": False, "after_offline": True})
         both = self._report(share={"on_live": False, "after_offline": False})
@@ -364,6 +369,7 @@ CONFIG = {
                  "interval": {"min": 1.0, "max": 3.0}},
         "share": {"on_live": True, "after_offline": True},
         "night_light": {"enabled": True, "after_hour": 1},
+        "notify": {"enabled": True},
     },
 }
 

@@ -51,6 +51,8 @@ python3 {baseDir}/scripts/heartbeat.py --until-offline
 
 三个动作的内容与开关都写在本项目根目录的 `.asoul_config.json` 里
 （`danmaku` / `like` / `share` 三段，全部可选，缺省用内置默认值）。
+开播/下播的 Discord 通知另有一段 `notify.enabled`，**缺省关闭**——
+通知要调外部的 `openclaw` CLI，没装的环境不该白起进程。
 
 | 动作 | 触发 | 说明 |
 |------|------|------|
@@ -120,7 +122,7 @@ openclaw cron add --name "A-SOUL进程管理" --cron "*/5 * * * *" \\
 **优势：**
 - 进程锁定防止重复启动
 - 自动检测已死进程并清理锁文件
-- 仅在真正开播/下播时发送 Discord 通知
+- 仅在真正开播/下播时发送 Discord 通知（`notify.enabled=true` 才发，缺省关）
 - 详细日志记录到 logs/ 目录
 - 自动处理成员状态变化
 
