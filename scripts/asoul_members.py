@@ -74,8 +74,109 @@ def _parse_hours(raw) -> Dict[str, int]:
     return hours
 
 
+_DEFAULT_SETTINGS = {
+    "danmaku": {
+        # 开播时发的一条
+        "on_live": ["晚好"],
+        # 下播/未开播时发的编号弹幕
+        "after_offline": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+        "interval": {"min": 3, "max": 12},
+    },
+    "like": {
+        # 直播间点赞不涨亲密度、只加热度，且 B 站有未知的每日上限。
+        # 默认取一个「一晚能点满、不至于整晚空转刷接口」的值，实测后可上调。
+        "target": 500,
+        # 每次请求汇总上报几次点击（网页前端就是这么攒着一起报的）。
+        # 服务端若因这个值报错，调小它，最小是 1。
+        "batch": 10,
+        # 每次上报之间随机等待的秒数
+        "interval": {"min": 1.0, "max": 3.0},
+    },
+    "share": {"on_live": True, "after_offline": True},
+}
+
+
+def _number(value, where: str):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise _fail(f"{where} 必须是非负数，实际是 {value!r}")
+    return value
+
+
+def _interval(raw, where: str) -> Dict[str, float]:
+    if not isinstance(raw, dict):
+        raise _fail(f'{where} 必须是对象，如 {{"min": 3, "max": 12}}')
+    low = _number(raw.get("min"), f"{where}.min")
+    high = _number(raw.get("max"), f"{where}.max")
+    if high < low:
+        raise _fail(f"{where}.max（{high}）不能小于 min（{low}）")
+    return {"min": low, "max": high}
+
+
+def _messages(raw, where: str) -> List[str]:
+    if not isinstance(raw, list) or not raw:
+        raise _fail(f"{where} 必须是非空字符串数组")
+    out = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, str) or not item.strip():
+            raise _fail(f"{where}[{i}] 必须是非空字符串，实际是 {item!r}")
+        out.append(item.strip())
+    return out
+
+
+def _bool_setting(raw, where: str) -> bool:
+    if not isinstance(raw, bool):
+        raise _fail(f"{where} 必须是 true 或 false，实际是 {raw!r}")
+    return raw
+
+
+def _parse_settings(data: Dict) -> Dict:
+    """把 danmaku / like / share 三段与默认值合并，并校验。三段都可整段省略。"""
+    raw = {key: data.get(key, {}) for key in _DEFAULT_SETTINGS}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            raise _fail(f"{key} 必须是对象")
+
+    danmaku_raw, like_raw, share_raw = raw["danmaku"], raw["like"], raw["share"]
+    d_def = _DEFAULT_SETTINGS["danmaku"]
+    l_def = _DEFAULT_SETTINGS["like"]
+    s_def = _DEFAULT_SETTINGS["share"]
+
+    target = like_raw.get("target", l_def["target"])
+    if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
+        raise _fail(f"like.target 必须是正整数，实际是 {target!r}")
+
+    batch = like_raw.get("batch", l_def["batch"])
+    if isinstance(batch, bool) or not isinstance(batch, int) or batch <= 0:
+        raise _fail(f"like.batch 必须是正整数，实际是 {batch!r}")
+
+    return {
+        "danmaku": {
+            "on_live": _messages(danmaku_raw.get("on_live", d_def["on_live"]),
+                                 "danmaku.on_live"),
+            "after_offline": _messages(danmaku_raw.get("after_offline", d_def["after_offline"]),
+                                       "danmaku.after_offline"),
+            "interval": _interval(danmaku_raw.get("interval", d_def["interval"]),
+                                  "danmaku.interval"),
+        },
+        "like": {
+            "target": target,
+            "batch": batch,
+            "interval": _interval(like_raw.get("interval", l_def["interval"]),
+                                  "like.interval"),
+        },
+        "share": {
+            "on_live": _bool_setting(share_raw.get("on_live", s_def["on_live"]), "share.on_live"),
+            "after_offline": _bool_setting(
+                share_raw.get("after_offline", s_def["after_offline"]), "share.after_offline"),
+        },
+    }
+
+
 def load_config() -> Dict:
-    """读取并校验配置，返回 {"members": [{name, uid, room?}, ...], "active_hours": {...}}。"""
+    """读取并校验配置。
+
+    返回 {"members": [...], "active_hours": {...}, "settings": {...}}。
+    """
     if not CONFIG_PATH.exists():
         raise _fail("找不到配置文件")
 
@@ -90,7 +191,13 @@ def load_config() -> Dict:
     return {
         "members": _parse_members(data.get("members")),
         "active_hours": _parse_hours(data.get("active_hours")),
+        "settings": _parse_settings(data),
     }
+
+
+def load_settings() -> Dict:
+    """只取弹幕 / 点赞 / 分享三段设置（已填好默认值并校验）。"""
+    return load_config()["settings"]
 
 
 def load_members(require_room: bool = False) -> List[Dict]:

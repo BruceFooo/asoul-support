@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import asoul_members  # noqa: E402
-from asoul_members import ConfigError, load_config, load_members  # noqa: E402
+from asoul_members import ConfigError, load_config, load_members, load_settings  # noqa: E402
 
 
 class _ConfigFixture(unittest.TestCase):
@@ -177,6 +177,87 @@ class RequireRoomTests(_ConfigFixture):
         with self.assertRaises(ConfigError) as ctx:
             load_members(require_room=True)
         self.assertIn("无房间主播", str(ctx.exception))
+
+
+class SettingsTests(_ConfigFixture):
+    """danmaku / like / share 三段都可选，缺省用内置默认值。"""
+
+    def _settings(self, **extra):
+        self.write_config({"members": [JARAN], **extra})
+        return load_settings()
+
+    def test_defaults_when_absent(self):
+        s = self._settings()
+        self.assertEqual(s["danmaku"]["on_live"], ["晚好"])
+        self.assertEqual(s["danmaku"]["after_offline"],
+                         ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"])
+        self.assertEqual(s["danmaku"]["interval"], {"min": 3, "max": 12})
+        self.assertEqual(s["like"]["target"], 500)
+        self.assertEqual(s["like"]["batch"], 10)
+        self.assertEqual(s["like"]["interval"], {"min": 1.0, "max": 3.0})
+        self.assertEqual(s["share"], {"on_live": True, "after_offline": True})
+
+    def test_partial_danmaku_falls_back_per_field(self):
+        s = self._settings(danmaku={"interval": {"min": 5, "max": 9}})
+        self.assertEqual(s["danmaku"]["interval"], {"min": 5, "max": 9})
+        self.assertEqual(s["danmaku"]["on_live"], ["晚好"])  # 未给的字段仍用默认
+
+    def test_custom_values(self):
+        s = self._settings(
+            danmaku={"on_live": ["来了"], "after_offline": ["签到"], "interval": {"min": 1, "max": 2}},
+            like={"target": 30, "interval": {"min": 0.5, "max": 1.5}},
+            share={"on_live": False, "after_offline": True},
+        )
+        self.assertEqual(s["danmaku"]["on_live"], ["来了"])
+        self.assertEqual(s["danmaku"]["after_offline"], ["签到"])
+        self.assertEqual(s["like"]["target"], 30)
+        self.assertEqual(s["share"], {"on_live": False, "after_offline": True})
+
+    def test_like_target_must_be_positive_int(self):
+        for bad in (0, -1, "500", 1.5, True, None):
+            with self.subTest(target=bad):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._settings(like={"target": bad})
+                self.assertIn("like.target", str(ctx.exception))
+
+    def test_like_batch_must_be_positive_int(self):
+        for bad in (0, -1, "10", 1.5, True, None):
+            with self.subTest(batch=bad):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._settings(like={"batch": bad})
+                self.assertIn("like.batch", str(ctx.exception))
+
+    def test_interval_bounds(self):
+        for bad in ({"min": 5, "max": 1}, {"min": -1, "max": 5},
+                    {"min": 1}, {"min": "1", "max": 2}):
+            with self.subTest(interval=bad):
+                with self.assertRaises(ConfigError):
+                    self._settings(danmaku={"interval": bad})
+
+    def test_interval_error_names_the_field(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._settings(like={"interval": {"min": 9, "max": 1}})
+        self.assertIn("like.interval.max", str(ctx.exception))
+
+    def test_empty_or_blank_messages_rejected(self):
+        for bad in ([], [""], ["   "], [123], "晚好"):
+            with self.subTest(msgs=bad):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._settings(danmaku={"on_live": bad})
+                self.assertIn("danmaku.on_live", str(ctx.exception))
+
+    def test_share_must_be_boolean(self):
+        for bad in ("yes", 1, None):
+            with self.subTest(value=bad):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._settings(share={"on_live": bad})
+                self.assertIn("share.on_live", str(ctx.exception))
+
+    def test_section_must_be_object(self):
+        for key in ("danmaku", "like", "share"):
+            with self.subTest(section=key):
+                with self.assertRaises(ConfigError):
+                    self._settings(**{key: ["not", "an", "object"]})
 
 
 class RealConfigTests(unittest.TestCase):
