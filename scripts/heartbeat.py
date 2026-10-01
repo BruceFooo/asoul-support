@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Optional, Dict, List
 
 from check_auth import check_login
-from asoul_members import ConfigError, load_members
+from asoul_members import ConfigError, load_members, load_settings
+from live_api import LiveClient
 
 _DISCORD_TARGET = "user:1479415368249507881"
 
@@ -84,14 +85,10 @@ def _log(event: dict):
         f.write(json.dumps({**event, "ts": int(time.time())}, ensure_ascii=False) + "\n")
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-_DANMAKU_MSGS = [
-    "来了来了", "❤️❤️❤️", "加油", "冲冲冲", "一直在",
-    "支持", "好好好", "比心", "干杯", "爱了爱了",
-    "哈哈哈哈", "早上好", "晚上好", "冲鸭",
-]
 
-# 成员来自项目根 .asoul_config.json，由 main() 加载后填充（见 scripts/asoul_members.py）
+# 成员与设置来自项目根 .asoul_config.json，由 main() 加载后填充（见 scripts/asoul_members.py）
 MEMBERS: list = []
+SETTINGS: Dict = {}
 
 WATCH_MINUTES = 25
 HEARTBEAT_INTERVAL = 60
@@ -155,37 +152,33 @@ def _post_json(url: str, data: dict, timeout: int = 10) -> Optional[dict]:
         return None
 
 
-def _send_danmaku(room_id: int, msg: str, sessdata: str, bili_jct: str) -> bool:
-    """发送一条弹幕"""
-    url = "https://api.live.bilibili.com/msg/send"
-    data = {
-        "bubble": "0",
-        "msg": msg,
-        "color": "16777215",
-        "mode": "1",
-        "fontsize": "25",
-        "rnd": str(int(time.time())),
-        "roomid": str(room_id),
-        "csrf": bili_jct,
-        "csrf_token": bili_jct,
-    }
-    headers = _make_headers(sessdata, bili_jct, f"https://live.bilibili.com/{room_id}")
-    resp = _post_form(url, data, headers)
-    return resp is not None and resp.get("code") == 0
+def open_live_greeting(room_id: int, sessdata: str, bili_jct: str) -> bool:
+    """开播动作：分享直播间 + 发一条问候弹幕。
 
+    内容与开关都来自配置的 settings 段（`danmaku.on_live` / `share.on_live`）。
+    `on_live` 是数组，这里随机取一条，方便配置多个说法换着发。
+    两个动作都是尽力而为：失败只打日志，不影响后续挂机。
+    """
+    danmaku = SETTINGS.get("danmaku") or {}
+    messages = danmaku.get("on_live") or ["晚好"]
+    share_on = (SETTINGS.get("share") or {}).get("on_live", True)
 
-def light_up_medal(room_id: int, sessdata: str, bili_jct: str, count: int = 10):
-    """开播时发10条弹幕点亮粉丝牌"""
-    import random
-    msgs = _DANMAKU_MSGS[:]
-    random.shuffle(msgs)
-    sent = 0
-    for msg in msgs[:count]:
-        if _send_danmaku(room_id, msg, sessdata, bili_jct):
-            sent += 1
-        time.sleep(3)
-    print(f"    💬 弹幕点亮：{sent}/{count} 条", file=sys.stderr)
-    return sent
+    client = LiveClient(sessdata, bili_jct)
+
+    if share_on:
+        resp = client.share(room_id)
+        if resp.get("code") == 0:
+            print("    🔗 已分享直播间", file=sys.stderr)
+        else:
+            print(f"    ⚠️  分享失败：{resp.get('code')} {resp.get('message')}", file=sys.stderr)
+
+    msg = random.choice(messages)
+    resp = client.send_danmaku(room_id, msg)
+    if resp.get("code") != 0:
+        print(f"    ⚠️  弹幕发送失败：{resp.get('code')} {resp.get('message')}", file=sys.stderr)
+        return False
+    print(f"    💬 已发送弹幕：{msg}", file=sys.stderr)
+    return True
 
 
 # ──────────────────────────────────────────
@@ -623,8 +616,8 @@ def watch_room(member: Dict, sessdata: str, bili_jct: str,
         title_str = f"「{title}」" if title else ""
         start_clock = time.strftime("%H:%M")
         _notify(f"🔴 **{name}** 开播啦！{title_str}\n开始时间：{start_clock}，自动挂机中...")
-        print(f"    💬 发送弹幕点亮粉丝牌...", file=sys.stderr)
-        light_up_medal(room_id, sessdata, bili_jct)
+        print(f"    💬 分享直播间并发送问候弹幕...", file=sys.stderr)
+        open_live_greeting(room_id, sessdata, bili_jct)
         print(f"    ⏱  开始挂机直到下播（每 {interval}s 心跳一次）...", file=sys.stderr)
         beats_ok = 0
         beat_num = 0
@@ -760,9 +753,10 @@ def main():
     parser.add_argument("--check-only", action="store_true", help="只检测开播状态，不挂机")
     args = parser.parse_args()
 
-    global MEMBERS
+    global MEMBERS, SETTINGS
     try:
         MEMBERS = load_members(require_room=True)
+        SETTINGS = load_settings()
     except ConfigError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         sys.exit(1)

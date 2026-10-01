@@ -2,5 +2,16 @@
   "members": [
     { "name": "枯水", "uid": 699438, "room": 281 }
   ],
-  "active_hours": { "start": 21, "end": 1 }
+  "active_hours": { "start": 19, "end": 4 },
+  "danmaku": {
+    "on_live": ["晚好"],
+    "after_offline": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+    "interval": { "min": 3, "max": 12 }
+  },
+  "like": {
+    "target": 500,
+    "batch": 10,
+    "interval": { "min": 1.0, "max": 3.0 }
+  },
+  "share": { "on_live": true, "after_offline": true }
 }

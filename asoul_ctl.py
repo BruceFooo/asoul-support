@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import manage_asoul_heartbeat as mgr  # noqa: E402
+import like_room  # noqa: E402
 from asoul_members import ConfigError, load_config  # noqa: E402
 
 TASK_NAME = "ASOUL_Heartbeat_Manage"
@@ -36,28 +37,28 @@ def task_state() -> str:
     return "disabled" if "Disabled" in result.stdout else "enabled"
 
 
-def running_heartbeats() -> list:
-    """返回 [(房间号, 成员名或 None, pid), ...]，表示仍在运行的挂机进程。
+def running_processes() -> list:
+    """返回 [(房间号, 成员名或 None, pid, 类型), ...]，类型为 "挂机" 或 "点赞"。
 
     直接扫描锁目录（而不是遍历成员列表），这样已从配置中删除的成员遗留的进程也能被发现。
     """
-    if not mgr.LOCK_DIR.exists():
-        return []
-
     try:
         names = {str(m.get("room")): m["name"] for m in load_config()["members"]}
     except ConfigError:
         names = {}
 
     running = []
-    for lock_file in sorted(mgr.LOCK_DIR.glob("*.lock")):
-        try:
-            pid = int(lock_file.read_text().strip())
-        except (OSError, ValueError):
+    for lock_dir, kind in ((mgr.LOCK_DIR, "挂机"), (mgr.LIKE_LOCK_DIR, "点赞")):
+        if not lock_dir.exists():
             continue
-        if mgr._pid_alive(pid):
-            room = lock_file.stem
-            running.append((room, names.get(room), pid))
+        for lock_file in sorted(lock_dir.glob("*.lock")):
+            try:
+                pid = int(lock_file.read_text().strip())
+            except (OSError, ValueError):
+                continue
+            if mgr._pid_alive(pid):
+                room = lock_file.stem
+                running.append((room, names.get(room), pid, kind))
     return running
 
 
@@ -78,13 +79,29 @@ def cmd_status() -> int:
     print(f"监听成员（{len(config['members'])} 人）: "
           f"{', '.join(m['name'] for m in config['members'])}")
 
-    running = running_heartbeats()
+    running = running_processes()
     if running:
-        print(f"正在挂机 {len(running)} 个进程:")
-        for room, name, pid in running:
-            print(f"  - {name or '(未在配置中)'}（房间 {room}，PID {pid}）")
+        print(f"后台进程 {len(running)} 个:")
+        for room, name, pid, kind in running:
+            print(f"  - [{kind}] {name or '(未在配置中)'}（房间 {room}，PID {pid}）")
     else:
-        print("正在挂机: 无")
+        print("后台进程: 无")
+
+    today = like_room.local_date()
+    target = config["settings"]["like"]["target"]
+    done, cached = {}, []
+    for member in config["members"]:
+        room = member.get("room")
+        if room is None:
+            continue
+        clicked = like_room.load_progress(room, today)
+        if clicked >= target:
+            done.append(member["name"])
+        elif clicked:
+            cached.append(f"{member['name']} {clicked}/{target}")
+    print(f"今晚点赞: 已点满 {len(done)}/{len(config['members'])} 人"
+          + (f"（{', '.join(done)}）" if done else "")
+          + (f"；进行中 {', '.join(cached)}" if cached else ""))
     return 0
 
 
@@ -102,9 +119,11 @@ def cmd_start() -> int:
 def cmd_stop() -> int:
     if task_state() != "missing":
         _schtasks("/Change", "/TN", TASK_NAME, "/DISABLE")
-    mgr.LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    stopped = mgr.stop_locked_members(mgr.LOCK_DIR, "手动关闭")
-    print(f"🛑 已关闭：计划任务已禁用，终止了 {stopped} 个挂机进程。")
+    stopped = 0
+    for lock_dir in (mgr.LOCK_DIR, mgr.LIKE_LOCK_DIR):
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        stopped += mgr.stop_locked_members(lock_dir, "手动关闭")
+    print(f"🛑 已关闭：计划任务已禁用，终止了 {stopped} 个后台进程。")
     return 0
 
 

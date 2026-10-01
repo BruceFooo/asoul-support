@@ -157,5 +157,220 @@ class StopMemberTests(unittest.TestCase):
             self.assertEqual(mgr.stop_locked_members(Path(d) / "nope", "test"), 0)
 
 
+class _LockFixture(unittest.TestCase):
+    """把两个锁目录和日志目录都指到临时目录，避免污染仓库。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.lock_dir = root / "locks"
+        self.like_dir = root / "like_locks"
+        self.log_dir = root / "logs"
+        for name, value in (("LOCK_DIR", self.lock_dir), ("LIKE_LOCK_DIR", self.like_dir),
+                            ("LOG_DIR", self.log_dir)):
+            patcher = patch.object(mgr, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def write_lock(self, directory: Path, room: int, pid) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        lock = directory / f"{room}.lock"
+        lock.write_text(str(pid))
+        return lock
+
+
+class LivePidTests(_LockFixture):
+    def test_missing_lock_is_none(self):
+        self.assertIsNone(mgr._live_pid(self.lock_dir / "281.lock"))
+
+    def test_running_process_returns_pid(self):
+        lock = self.write_lock(self.lock_dir, 281, 4321)
+        with patch.object(mgr, "_pid_alive", return_value=True):
+            self.assertEqual(mgr._live_pid(lock), 4321)
+        self.assertTrue(lock.exists())  # 有效的锁必须留着
+
+    def test_dead_process_clears_the_lock(self):
+        lock = self.write_lock(self.lock_dir, 281, 4321)
+        with patch.object(mgr, "_pid_alive", return_value=False):
+            self.assertIsNone(mgr._live_pid(lock))
+        self.assertFalse(lock.exists())
+
+    def test_empty_lock_is_cleared(self):
+        self.write_lock(self.lock_dir, 281, "")
+        self.assertIsNone(mgr._live_pid(self.lock_dir / "281.lock"))
+        self.assertFalse((self.lock_dir / "281.lock").exists())
+
+    def test_garbage_lock_is_cleared(self):
+        self.write_lock(self.lock_dir, 281, "not-a-pid")
+        self.assertIsNone(mgr._live_pid(self.lock_dir / "281.lock"))
+        self.assertFalse((self.lock_dir / "281.lock").exists())
+
+
+class StartLockedTests(_LockFixture):
+    def test_spawns_and_records_pid(self):
+        lock = self.lock_dir / "281.lock"
+        with patch.object(mgr.subprocess, "Popen") as popen:
+            popen.return_value.pid = 777
+            pid = mgr.start_locked(["python", "x.py"], lock, "like_枯水")
+        self.assertEqual(pid, 777)
+        self.assertEqual(lock.read_text(), "777")
+        self.assertTrue(any(self.log_dir.glob("like_枯水_*.log")))
+
+
+class StartHeartbeatTests(_LockFixture):
+    MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
+
+    def test_starts_when_no_lock(self):
+        with patch.object(mgr.subprocess, "Popen") as popen:
+            popen.return_value.pid = 555
+            pid = mgr.start_heartbeat(self.MEMBER)
+        self.assertEqual(pid, 555)
+        cmd = popen.call_args[0][0]
+        self.assertIn("--until-offline", cmd)
+        self.assertEqual(cmd[-1], "枯水")
+
+    def test_reuses_running_process(self):
+        self.write_lock(self.lock_dir, 281, 555)
+        with patch.object(mgr, "_pid_alive", return_value=True), \
+             patch.object(mgr.subprocess, "Popen") as popen:
+            self.assertEqual(mgr.start_heartbeat(self.MEMBER), 555)
+        popen.assert_not_called()
+
+
+class StartLikeTests(_LockFixture):
+    MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
+    SETTINGS = {"like": {"target": 500, "batch": 10, "interval": {"min": 1.0, "max": 3.0}}}
+
+    def test_starts_when_progress_unfinished(self):
+        with patch.object(mgr.subprocess, "Popen") as popen:
+            popen.return_value.pid = 666
+            self.assertEqual(mgr.start_like(self.MEMBER, self.SETTINGS), 666)
+        cmd = popen.call_args[0][0]
+        self.assertTrue(any("like_room.py" in part for part in cmd))
+        self.assertEqual(cmd[-1], "枯水")
+
+    def test_reuses_running_process(self):
+        self.write_lock(self.like_dir, 281, 666)
+        with patch.object(mgr, "_pid_alive", return_value=True), \
+             patch.object(mgr.subprocess, "Popen") as popen:
+            self.assertEqual(mgr.start_like(self.MEMBER, self.SETTINGS), 666)
+        popen.assert_not_called()
+
+    def test_does_not_respawn_after_target_reached(self):
+        """点满之后每 5 分钟白起一个进程是纯粹的浪费，也会刷出一堆日志。"""
+        with patch.object(mgr.like_room, "is_done", return_value=True), \
+             patch.object(mgr.subprocess, "Popen") as popen:
+            self.assertIsNone(mgr.start_like(self.MEMBER, self.SETTINGS))
+        popen.assert_not_called()
+
+    def test_spawns_after_daily_reset(self):
+        """跨天之后进度清零，必须重新拉起。"""
+        with patch.object(mgr.like_room, "is_done", return_value=False), \
+             patch.object(mgr.subprocess, "Popen") as popen:
+            popen.return_value.pid = 1
+            self.assertEqual(mgr.start_like(self.MEMBER, self.SETTINGS), 1)
+        popen.assert_called_once()
+
+
+class RunNightLightTests(unittest.TestCase):
+    MEMBERS = [{"name": "枯水", "uid": 699438, "room": 281}]
+
+    def test_runs_the_script(self):
+        with patch.object(mgr.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            self.assertEqual(mgr.run_night_light(self.MEMBERS), 0)
+        cmd = run.call_args[0][0]
+        self.assertTrue(any("night_light.py" in part for part in cmd))
+
+    def test_forwards_member_filter(self):
+        with patch.object(mgr.subprocess, "run") as run:
+            mgr.run_night_light(self.MEMBERS, only_names="枯水")
+        self.assertEqual(run.call_args[0][0][-2:], ["--members", "枯水"])
+
+    def test_no_members_is_a_noop(self):
+        with patch.object(mgr.subprocess, "run") as run:
+            self.assertEqual(mgr.run_night_light([]), 0)
+        run.assert_not_called()
+
+    def test_child_failure_does_not_fail_the_whole_run(self):
+        """点亮是尽力而为的附加功能，不该把整个调度任务标成失败。"""
+        with patch.object(mgr.subprocess, "run") as run:
+            run.return_value.returncode = 1
+            self.assertEqual(mgr.run_night_light(self.MEMBERS), 0)
+
+
+MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
+CONFIG = {
+    "members": [MEMBER],
+    "active_hours": {"start": 21, "end": 1},
+    "settings": {
+        "danmaku": {"on_live": ["晚好"], "after_offline": ["1"],
+                    "interval": {"min": 3, "max": 12}},
+        "like": {"target": 500, "batch": 10, "interval": {"min": 1.0, "max": 3.0}},
+        "share": {"on_live": True, "after_offline": True},
+    },
+}
+
+
+class MainWiringTests(_LockFixture):
+    """main() 的三条分支各该拉起/放下什么。全程不联网、不起真进程。"""
+
+    def setUp(self):
+        super().setUp()
+        self.cookie = Path(self._tmp.name) / ".cookies.json"
+        self.cookie.write_text("{}")
+        patcher = patch.object(mgr, "COOKIE_FILE", self.cookie)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, hour, live=False, argv=()):
+        live_status = {"枯水": MEMBER} if live else {}
+        with patch.object(sys, "argv", ["manage_asoul_heartbeat.py", *argv]), \
+             patch.object(mgr, "current_hour", return_value=hour), \
+             patch.object(mgr, "load_config", return_value=CONFIG), \
+             patch.object(mgr, "load_members", return_value=[MEMBER]), \
+             patch.object(mgr, "get_live_status", return_value=live_status), \
+             patch.object(mgr, "start_heartbeat") as hb, \
+             patch.object(mgr, "start_like") as like, \
+             patch.object(mgr, "run_night_light") as night:
+            rc = mgr.main()
+        return rc, hb, like, night
+
+    def test_live_member_gets_both_processes(self):
+        rc, hb, like, night = self._run(hour=22, live=True)
+        self.assertEqual(rc, 0)
+        hb.assert_called_once_with(MEMBER)
+        like.assert_called_once_with(MEMBER, settings=CONFIG["settings"])
+        night.assert_not_called()
+
+    def test_offline_member_gets_nothing(self):
+        rc, hb, like, night = self._run(hour=22, live=False)
+        self.assertEqual(rc, 0)
+        hb.assert_not_called()
+        like.assert_not_called()
+        night.assert_not_called()
+
+    def test_sleep_window_points_the_night_light(self):
+        rc, hb, like, night = self._run(hour=2)
+        self.assertEqual(rc, 0)
+        hb.assert_not_called()
+        like.assert_not_called()
+        night.assert_called_once_with([MEMBER], only_names=None)
+
+    def test_missing_cookie_is_an_error(self):
+        self.cookie.unlink()
+        rc, hb, like, night = self._run(hour=22, live=True)
+        self.assertEqual(rc, 1)
+        hb.assert_not_called()
+
+    def test_ignore_window_forces_the_active_branch(self):
+        """--ignore-window 在睡眠时段也要挂机（手动补挂用）。"""
+        rc, hb, like, night = self._run(hour=2, live=True, argv=["--ignore-window"])
+        self.assertEqual(rc, 0)
+        hb.assert_called_once()
+        night.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
