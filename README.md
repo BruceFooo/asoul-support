@@ -36,12 +36,15 @@
 | 功能 | 使用条件 | 说明 |
 |------|----------|------|
 | 💓 **心跳挂机涨亲密度** | 需要开播 | X25Kn E/X 协议；结束后记录亲密度前后值和实际增量 |
-| 🏅 **粉丝牌自动点亮** | 需要开播 | 发 10 条弹幕点亮牌子，保持 3 天可见 |
+| 🎉 **开播问候** | 需要开播 | 分享直播间 + 发一条问候弹幕（内容可配置） |
+| 👍 **直播间点赞** | 需要开播 | 点满配置的次数后停止，随机间隔模拟手动点击 |
+| 🌙 **下播点亮** | 下播后 | 活跃时段结束后，若没在播则分享 + 连发 10 条弹幕，每晚一次 |
+| 🏅 **粉丝牌手动点亮** | 需要开播 | `checkin.py --live-only`：发 10 条弹幕，保持 3 天可见 |
 | 🪙 **自动投币** | 无 | 给成员视频投币（1 币 = 10 亲密度），需用户明确开启 |
 | 👍 **视频自动点赞** | 无 | 自动给成员新视频点赞（默认每周执行，避免风控） |
 | 💬 **动态自动点赞** | 无 | 自动给成员新动态点赞（默认关闭，需手动开启） |
 
-> B站亲密度规则：观看直播每分钟少量结算（具体数值由 B 站后端控制）；投币 1 币 = 10 亲密度。粉丝牌点亮（10 条弹幕）只维持牌子可见，不直接计入亲密度。
+> B站亲密度规则：观看直播每分钟少量结算（具体数值由 B 站后端控制）；投币 1 币 = 10 亲密度。粉丝牌点亮（10 条弹幕）只维持牌子可见，不直接计入亲密度；直播间点赞只加热度，**不涨亲密度**。
 
 ---
 
@@ -49,6 +52,7 @@
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| **v4.2** | 2026-10-01 | 按事件重构调度：开播问候（分享 + 1 条弹幕）、开播点赞（点满停）、下播点亮（分享 + 10 条弹幕，每晚一次）；弹幕/点赞/分享全部可在配置里调 |
 | **v4.1.1** | 2026-07-27 | 修复 X25Kn 心跳时间漂移和失败链恢复；新增亲密度增量记录与登录预检；GitHub Actions 升级到 Node 24 运行时 |
 | **v4.1** | 2026-05-28 | 心跳协议升级为 **X25Kn E/X**（HMAC 链式签名），替代已失效的 `mobileHeartBeat`；自动获取 LIVE_BUVID；GitHub Action 频率降低以减少风控 |
 | v4 | 2026-04-01 | （已废弃）`mobileHeartBeat` 协议——B 站后端已停止为该协议结算亲密度 |
@@ -141,10 +145,13 @@ python3 scripts/checkin.py --save-cookie --sessdata "你的SESSDATA" --bili-jct 
 # 检测谁在播 + 自动挂机涨亲密度
 python3 scripts/heartbeat.py
 
-# 挂机到下播为止
+# 挂机到下播为止（开播时会自动分享 + 发一条问候弹幕）
 python3 scripts/heartbeat.py --until-offline
 
-# 发弹幕点亮粉丝牌
+# 给正在直播的房间点赞
+python3 scripts/like_room.py
+
+# 发 10 条弹幕点亮粉丝牌
 python3 scripts/checkin.py --live-only
 ```
 
@@ -216,7 +223,14 @@ python3 scripts/heartbeat.py --members 嘉然,贝拉
 # 挂机直到下播
 python3 scripts/heartbeat.py --until-offline
 
-# 发弹幕点亮粉丝牌
+# 给正在直播的房间点赞（点满配置的次数后停止）
+python3 scripts/like_room.py
+python3 scripts/like_room.py --dry-run      # 只看今晚进度，不发请求
+
+# 下播后分享 + 连发弹幕（每晚一次；在直播则跳过）
+python3 scripts/night_light.py
+
+# 手动发 10 条弹幕点亮粉丝牌
 python3 scripts/checkin.py --live-only
 
 # 给最近视频投币+收藏
@@ -229,11 +243,18 @@ python3 scripts/videos.py --days 7 --coin --fav
 
 | 文件 | 作用 |
 |------|------|
-| `.asoul_config.json` | **唯一的数据源**：成员表 `members`（name/uid/room）+ 活跃时段 `active_hours`。已纳入 git（内容不含任何密钥） |
+| `.asoul_config.json` | **唯一的数据源**：成员表 `members`（name/uid/room）+ 活跃时段 `active_hours` + 行为设置 `danmaku`/`like`/`share`。已纳入 git（内容不含任何密钥） |
 | `scripts/asoul_members.py` | 读取并校验上面这个配置的共享模块 |
+| `scripts/live_api.py` | 所有直播接口（弹幕 / 点赞 / 分享 / 直播状态）的唯一实现 |
+| `scripts/wbi.py` | 点赞接口要用的 WBI 签名 |
+| `scripts/like_room.py` | 点赞进程：点满即停 |
+| `scripts/night_light.py` | 下播点亮：分享 + 连发弹幕，每晚一次 |
 | `run_manage.bat` | 无窗口运行器，由计划任务每 5 分钟调用 |
 | `asoul_ctl.py` | 开关 / 状态控制台 |
 | `.state/locks/` | 挂机进程锁（运行时生成，已 gitignore） |
+| `.state/like_locks/` | 点赞进程锁（运行时生成，已 gitignore） |
+| `.state/likes/` | 点赞进度，按天存（运行时生成，已 gitignore） |
+| `.state/night_light/` | 下播点亮进度，按天存（运行时生成，已 gitignore） |
 | `logs/` | 运行日志（已 gitignore） |
 
 ### 配置示例
@@ -244,41 +265,69 @@ python3 scripts/videos.py --days 7 --coin --fav
     { "name": "嘉然", "uid": 672328094, "room": 22637261 },
     { "name": "贝拉", "uid": 672353429, "room": 22632424 }
   ],
-  "active_hours": { "start": 21, "end": 1 }
+  "active_hours": { "start": 21, "end": 1 },
+  "danmaku": {
+    "on_live": ["晚好"],
+    "after_offline": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+    "interval": { "min": 3, "max": 12 }
+  },
+  "like": {
+    "target": 500,
+    "batch": 10,
+    "interval": { "min": 1.0, "max": 3.0 }
+  },
+  "share": { "on_live": true, "after_offline": true }
 }
 ```
 
 - `members`：**必须**是非空数组，每条格式为 `{"name": 名字, "uid": 空间UID, "room": 直播间号}`。
   - `name` 非空且不能重复；`uid` 必须是正整数。
-  - `room` 只在需要直播间号的功能（挂机、点亮粉丝牌）里必需；动态点赞 / 视频投币只用到 `uid`，可以不写 `room`。
+  - `room` 只在需要直播间号的功能（挂机、点赞、点亮）里必需；动态点赞 / 视频投币只用到 `uid`，可以不写 `room`。
   - **加主播 = 在这里加一条**；删成员 = 删掉那一条。不要写"只填名字"的简写——uid 和 room 必须显式给出。
 - `active_hours`：可选，缺省为全天。支持跨零点，`{"start": 21, "end": 1}` 表示 21:00–00:59 活跃，其余时间睡眠；`start == end` 表示全天。
-- 配置文件**缺失或格式非法会直接报错退出**（不会静默回退到内置名单）——宁可报错，也不要用错的人名单跑挂机。
+- `danmaku`：`on_live` 是开播时随机取一条发的问候；`after_offline` 是下播点亮时按顺序发的弹幕（每条之间随机等 `interval.min`–`interval.max` 秒）。
+- `like`：`target` 是每晚点赞目标次数；`batch` 是每次请求汇总上报几次点击（网页前端就是这么攒着报的，服务端若报错就调小它，最小 1）；`interval` 是两次请求之间随机等待的秒数。
+- `share`：开播 / 下播点亮时是否分享直播间。
+- 上面三段都可以整段省略，用内置默认值。配置文件**缺失或格式非法会直接报错退出**（不会静默回退到内置名单）——宁可报错，也不要用错的人名单跑挂机。
 
 > `uid` 是空间号（`space.bilibili.com/<uid>`），`room` 是直播间号（`live.bilibili.com/<room>`），两者**不相等**，别填混。
+> `room` 写浏览器地址栏那个**短号**（如 `281`）即可，脚本会自动换成接口需要的真实房间号（`49728`）。
 
 ### 开关与状态
 
 ```bash
-python asoul_ctl.py status   # 任务是否启用 / 当前是否活跃时段 / 哪些挂机进程在跑
+python asoul_ctl.py status   # 任务是否启用 / 当前是否活跃时段 / 后台进程 / 今晚点赞进度
 python asoul_ctl.py start    # 开启：启用计划任务 + 立即检测一次
-python asoul_ctl.py stop     # 关闭：禁用任务 + 终止正在挂机的进程
+python asoul_ctl.py stop     # 关闭：禁用任务 + 终止正在跑的后台进程
 python asoul_ctl.py run      # 只立即检测一次，不改开关
 python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 ```
 
 ### 后台进程是怎么跑的
 
-计划任务 `ASOUL_Heartbeat_Manage` 每 5 分钟执行一次 `run_manage.bat` → `pythonw.exe manage_asoul_heartbeat.py`：
+计划任务 `ASOUL_Heartbeat_Manage` 每 5 分钟执行一次 `run_manage.bat` → `pythonw.exe manage_asoul_heartbeat.py`。
+管理脚本本身**不会常驻**，它只负责按事件拉起 / 放下别的进程：
 
 1. 通过 `scripts/asoul_members.py` 读取 `.asoul_config.json`，判断当前是否在活跃时段；
-2. **时段外**：终止仍在运行的挂机进程并退出（真正睡眠）；
+2. **时段外（睡眠）**：终止仍在跑的挂机与点赞进程，然后跑一次 `night_light.py`；
 3. **时段内**：调 `heartbeat.py --check-only --json` 查谁在播；
-4. 对每个在播成员，后台启动一个独立的 `heartbeat.py --until-offline --members <成员>` 进程，
-   把 PID 写进 `.state/locks/<房间号>.lock`，输出重定向到 `logs/heartbeat_<成员>_<时间戳>.log`；
-5. 这些挂机进程**独立于计划任务存活**，直到主播下播才自行退出并清理锁。
+4. 对每个**在播**成员，各拉起两个独立进程，PID 写进锁文件、输出重定向到日志：
+   - `heartbeat.py --until-offline --members <成员>` → `.state/locks/<房间号>.lock`，`logs/heartbeat_<成员>_<时间戳>.log`
+   - `like_room.py --members <成员>` → `.state/like_locks/<房间号>.lock`，`logs/like_<成员>_<时间戳>.log`
+5. 对**没在播**的成员，把两个进程都杀掉并删锁；
+6. 这些后台进程**独立于计划任务存活**：挂机到下播为止，点赞点满为止（点满后 `manage` 看进度就知道不用再拉，不会每 5 分钟白起一次进程）。
 
 锁文件用于防止重复启动；`MultipleInstancesPolicy=IgnoreNew` 防止计划任务自身叠加。
+
+#### 三个事件分别做什么
+
+| 事件 | 触发时机 | 动作 |
+|------|----------|------|
+| **开播问候** | `heartbeat.py` 确认开播时 | 分享直播间（`share.on_live`）+ 发一条 `danmaku.on_live` |
+| **开播点赞** | 由 `manage` 拉起 `like_room.py` | 随机间隔点赞，点满 `like.target` 即停；触到服务端上限也立即停 |
+| **下播点亮** | 活跃时段结束后，房间**没在播**时 | 分享直播间（`share.after_offline`）+ 按序发 `danmaku.after_offline`，随机间隔；**每晚只发一次** |
+
+下播点亮由睡眠时段的每 5 分钟轮询实现，也就是「一直等，下播就发」：房间还开着就跳过，等它下播。进度按天存在 `.state/night_light/<房间号>.json`，中途被杀也不会重复发送。
 
 > ⚠️ 本任务 `LogonType=Interactive`：**只在当前用户登录状态下运行**，注销后不再触发。
 

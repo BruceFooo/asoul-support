@@ -35,10 +35,9 @@ A-SOUL 粉丝自动应援工具 — 开播检测 + 粉丝牌点亮 + 移动端�
 
 ## 功能 1 — 心跳挂机（涨亲密度，需开播）
 
-使用 B站移动端心跳协议（`mobileHeartBeat`），纯 Python 签名（sha512→sha3_512→sha384→sha3_384→blake2b），零外部依赖。
+使用 X25Kn E/X 心跳协议（HMAC 链式签名），纯 Python，零外部依赖。
 
-检测成员是否在播 → 自动佩戴粉丝牌 → 发弹幕点亮 → 心跳挂机。
-每 5 分钟 +6 亲密度，挂满 30/天/成员。
+检测成员是否在播 → 自动佩戴粉丝牌 → 分享直播间 + 发一条问候弹幕 → 心跳挂机涨亲密度。
 
 ```bash
 python3 {baseDir}/scripts/heartbeat.py
@@ -48,10 +47,29 @@ python3 {baseDir}/scripts/heartbeat.py --duration 30
 python3 {baseDir}/scripts/heartbeat.py --until-offline
 ```
 
-## 功能 2 — 粉丝牌点亮（需开播）
+## 功能 2 — 开播问候 / 点赞 / 下播点亮
 
-检测开播后发 10 条弹幕点亮牌子（保持 3 天可见）。
-**注意：需要成员正在直播时才能点亮。**
+三个动作的内容与开关都写在本项目根目录的 `.asoul_config.json` 里
+（`danmaku` / `like` / `share` 三段，全部可选，缺省用内置默认值）。
+
+| 动作 | 触发 | 说明 |
+|------|------|------|
+| 开播问候 | 确认开播时（由 `heartbeat.py` 做） | 分享直播间 + 随机发一条 `danmaku.on_live` |
+| 开播点赞 | 开播后（由 `manage_asoul_heartbeat.py` 拉起） | 点满 `like.target` 即停，触到服务端上限也停 |
+| 下播点亮 | 活跃时段结束后且**没在播** | 分享 + 按序发 `danmaku.after_offline`，随机间隔，每晚一次 |
+
+```bash
+python3 {baseDir}/scripts/like_room.py
+python3 {baseDir}/scripts/like_room.py --dry-run          # 只看今晚进度，不发请求
+python3 {baseDir}/scripts/night_light.py                  # 时段内会拒绝，加 --force 可强制
+python3 {baseDir}/scripts/night_light.py --members 嘉然
+```
+
+**在直播时绝不发下播弹幕**——这条是硬规则，`--force` 也不会绕过。
+
+## 功能 3 — 粉丝牌点亮（需开播）
+
+发 10 条弹幕点亮牌子（保持 3 天可见）。**需要成员正在直播时才能点亮。**
 
 ```bash
 python3 {baseDir}/scripts/checkin.py --live-only
@@ -59,7 +77,7 @@ python3 {baseDir}/scripts/checkin.py --live-only --members 嘉然,贝拉
 python3 {baseDir}/scripts/checkin.py --live-only --msg 签到 --msg 加油
 ```
 
-## 功能 3 — 视频点赞/投币/收藏（不需要开播）
+## 功能 4 — 视频点赞/投币/收藏（不需要开播）
 
 给成员新发布的视频批量互动。默认仅点赞，投币和收藏需明确指定。
 
@@ -69,7 +87,7 @@ python3 {baseDir}/scripts/videos.py --days 7 --coin --fav
 python3 {baseDir}/scripts/videos.py --month 3 --members 嘉然 --coin --fav
 ```
 
-## 功能 4 — 动态点赞（不需要开播）
+## 功能 5 — 动态点赞（不需要开播）
 
 ```bash
 python3 {baseDir}/scripts/dynamics.py --month 3

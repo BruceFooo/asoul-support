@@ -60,6 +60,7 @@
   },
   "like": {
     "target": 500,
+    "batch": 10,
     "interval": { "min": 1.0, "max": 3.0 }
   },
   "share": { "on_live": true, "after_offline": true }
@@ -108,7 +109,7 @@ scripts/asoul_members.py 修改  增加 load_settings()
 ```
 每个在播成员:
     确保挂机进程在跑   → .state/locks/<room>.lock
-    确保点赞进程在跑   → .state/likes/<room>.lock
+    确保点赞进程在跑   → .state/like_locks/<room>.lock
 不再在播:
     杀进程 + 清锁（已有逻辑）
 不在配置中的房间:
@@ -119,23 +120,21 @@ scripts/asoul_members.py 修改  增加 load_settings()
 
 ```
 停掉所有挂机 + 点赞进程（已有 stop_locked_members）
-每个成员:
-    今晚已点亮        → skip
-    当前在播          → skip
-    否则: 分享 + 发 after_offline，每条之间随机间隔
-          写 .state/night_light.json
+同步跑一次 night_light（它自己跳过在直播的房间）
 ```
 
 ## 状态与防重
 
 ```json
-.state/night_light.json   { "281": { "date": "2026-10-02", "sent": 10, "attempts": 1 } }
-.state/likes/<room>.json  { "date": "2026-10-02", "clicked": 320 }
+.state/night_light/<room>.json  { "date": "2026-10-02", "shared": true, "sent": 10,
+                                  "attempts": 1, "done": true }
+.state/likes/<room>.json        { "date": "2026-10-02", "clicked": 320 }
 ```
 
-- `sent` 达标 或 `attempts >= 3` → 当天不再尝试。设 `attempts` 上限是为了防止
+- `done` 为真 或 `attempts >= 3` → 当天不再尝试。设 `attempts` 上限是为了防止
   cookie 失效等持续失败场景下整晚每 5 分钟重试一次（12 次/小时 × 10 条）。
 - 跨天自动重置（比较本地日期，沿用 `GetLocalTime` 口径，避免 Git Bash 的 TZ=UTC 陷阱）。
+- 每发一条就落盘一次：进程中途被杀也不会重发或漏发。
 - 点赞存 `clicked` 累计数，进程被杀/重启后接着点。
 
 ## 测试
@@ -163,3 +162,23 @@ scripts/asoul_members.py 修改  增加 load_settings()
 - **点赞/分享 endpoint 未经验证**，是本方案唯一没有依据的部分，故置于实施第一步。
 - 探针与正式功能都会用账号 cookie 发起真实请求，需用户明确同意。
 - B 站对自动化有风控，README 已建议使用小号。
+
+## 实施偏差（落地后回填）
+
+实施过程中有四处与上面的设计不同，均为实现时才发现的具体问题：
+
+1. **`like.batch` 是新增的配置项**，原设计没有。点赞接口是「攒够若干次点击后统一上报」
+   （抓包里 `click_time=2`），一次请求报几次必须是个可调的数——默认 10，
+   服务端若不接受可调成 1，改配置即可，不用动代码。
+2. **`night_light` 的状态是每房间一个文件**（`.state/night_light/<room>.json`），
+   不是设计里的单个 `.state/night_light.json`。单文件需要跨房间的读改写，
+   分房间既免了并发写，也和 `.state/likes/<room>.json` 一致。
+3. **下播点亮由 `manage` 同步调用**，而不是再拉一个带锁的后台进程。最长也就
+   10 条 × 12 秒，远小于 5 分钟的调度间隔，同步还能让输出直接进 `logs/manage.log`。
+4. **`checkin.py` / `heartbeat.py` 的既有实现没有收敛进 `live_api`**。设计里说要顺手去重，
+   但 `heartbeat.check_live_status` 带一层 `_get_room_info` 回退（`live_api` 没有），
+   合并会改变挂机路径的行为。本次只在**新增**的开播问候 / 点赞 / 点亮上统一走 `live_api`，
+   既有挂机链路保持原样——不在同一个改动里动正在稳定工作的东西。
+
+另外补了一条设计里没有的优化：全部房间当晚都已有结论时，`night_light` 直接退出，
+不再打一次直播状态接口。睡眠时段每 5 分钟一次，一整夜下来能省掉上百次无谓请求。
