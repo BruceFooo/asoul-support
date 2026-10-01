@@ -179,7 +179,7 @@ python3 scripts/checkin.py --live-only
 
 ---
 
-## 🌟 内置成员
+## 🌟 默认成员（写在 `.asoul_config.json` 里）
 
 | 成员 | 直播间 | 主页 |
 |------|--------|------|
@@ -188,6 +188,9 @@ python3 scripts/checkin.py --live-only
 | 乃琳 | [22625027](https://live.bilibili.com/22625027) | [space](https://space.bilibili.com/672342685) |
 | 心宜 | [30849777](https://live.bilibili.com/30849777) | [space](https://space.bilibili.com/3537115310721181) |
 | 思诺 | [30858592](https://live.bilibili.com/30858592) | [space](https://space.bilibili.com/3537115310721781) |
+
+这 5 人只是**默认配置**，不是代码里写死的。想换主播：直接改 `.asoul_config.json`
+的 `members` 数组即可，`scripts/` 下所有脚本自动跟着变，无需碰任何 Python 文件。
 
 ## ❓ 常见问题
 
@@ -219,6 +222,65 @@ python3 scripts/checkin.py --live-only
 # 给最近视频投币+收藏
 python3 scripts/videos.py --days 7 --coin --fav
 ```
+
+## ⚙️ 本机配置（Windows 计划任务版）
+
+本仓库已针对 Windows + 计划任务做过适配，相关文件：
+
+| 文件 | 作用 |
+|------|------|
+| `.asoul_config.json` | **唯一的数据源**：成员表 `members`（name/uid/room）+ 活跃时段 `active_hours`。已纳入 git（内容不含任何密钥） |
+| `scripts/asoul_members.py` | 读取并校验上面这个配置的共享模块 |
+| `run_manage.bat` | 无窗口运行器，由计划任务每 5 分钟调用 |
+| `asoul_ctl.py` | 开关 / 状态控制台 |
+| `.state/locks/` | 挂机进程锁（运行时生成，已 gitignore） |
+| `logs/` | 运行日志（已 gitignore） |
+
+### 配置示例
+
+```json
+{
+  "members": [
+    { "name": "嘉然", "uid": 672328094, "room": 22637261 },
+    { "name": "贝拉", "uid": 672353429, "room": 22632424 }
+  ],
+  "active_hours": { "start": 21, "end": 1 }
+}
+```
+
+- `members`：**必须**是非空数组，每条格式为 `{"name": 名字, "uid": 空间UID, "room": 直播间号}`。
+  - `name` 非空且不能重复；`uid` 必须是正整数。
+  - `room` 只在需要直播间号的功能（挂机、点亮粉丝牌）里必需；动态点赞 / 视频投币只用到 `uid`，可以不写 `room`。
+  - **加主播 = 在这里加一条**；删成员 = 删掉那一条。不要写"只填名字"的简写——uid 和 room 必须显式给出。
+- `active_hours`：可选，缺省为全天。支持跨零点，`{"start": 21, "end": 1}` 表示 21:00–00:59 活跃，其余时间睡眠；`start == end` 表示全天。
+- 配置文件**缺失或格式非法会直接报错退出**（不会静默回退到内置名单）——宁可报错，也不要用错的人名单跑挂机。
+
+> `uid` 是空间号（`space.bilibili.com/<uid>`），`room` 是直播间号（`live.bilibili.com/<room>`），两者**不相等**，别填混。
+
+### 开关与状态
+
+```bash
+python asoul_ctl.py status   # 任务是否启用 / 当前是否活跃时段 / 哪些挂机进程在跑
+python asoul_ctl.py start    # 开启：启用计划任务 + 立即检测一次
+python asoul_ctl.py stop     # 关闭：禁用任务 + 终止正在挂机的进程
+python asoul_ctl.py run      # 只立即检测一次，不改开关
+python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
+```
+
+### 后台进程是怎么跑的
+
+计划任务 `ASOUL_Heartbeat_Manage` 每 5 分钟执行一次 `run_manage.bat` → `pythonw.exe manage_asoul_heartbeat.py`：
+
+1. 通过 `scripts/asoul_members.py` 读取 `.asoul_config.json`，判断当前是否在活跃时段；
+2. **时段外**：终止仍在运行的挂机进程并退出（真正睡眠）；
+3. **时段内**：调 `heartbeat.py --check-only --json` 查谁在播；
+4. 对每个在播成员，后台启动一个独立的 `heartbeat.py --until-offline --members <成员>` 进程，
+   把 PID 写进 `.state/locks/<房间号>.lock`，输出重定向到 `logs/heartbeat_<成员>_<时间戳>.log`；
+5. 这些挂机进程**独立于计划任务存活**，直到主播下播才自行退出并清理锁。
+
+锁文件用于防止重复启动；`MultipleInstancesPolicy=IgnoreNew` 防止计划任务自身叠加。
+
+> ⚠️ 本任务 `LogonType=Interactive`：**只在当前用户登录状态下运行**，注销后不再触发。
 
 ## License
 

@@ -5,6 +5,7 @@ pcheartbeat/
 
 # 运行时状态 / 日志
 .live_state.json
+.state/
 logs/
 *.log
 

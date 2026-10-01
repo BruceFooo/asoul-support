@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 
 from check_auth import check_login
+from asoul_members import ConfigError, load_members
 
 _DISCORD_TARGET = "user:1479415368249507881"
 
@@ -40,8 +41,40 @@ def _notify(msg: str):
         pass
 
 
-_LOCK_DIR = Path("/tmp/asoul_heartbeat_locks")
+_STATE_DIR = Path(__file__).resolve().parent.parent / ".state"
+_LOCK_DIR = _STATE_DIR / "locks"
 _LOG_FILE = Path.home() / ".openclaw" / "logs" / "asoul_activity.jsonl"
+
+
+def _pid_alive(pid: int) -> bool:
+    """跨平台判断进程是否存活。
+
+    Windows 上 os.kill(pid, 0) 不具备“探测”语义（对已死 PID 也不抛异常），
+    必须走 OpenProcess + GetExitCodeProcess 才能真正判断进程是否还在。
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError, ValueError):
+        return False
 
 
 def _log(event: dict):
@@ -57,13 +90,8 @@ _DANMAKU_MSGS = [
     "哈哈哈哈", "早上好", "晚上好", "冲鸭",
 ]
 
-MEMBERS = [
-    {"name": "嘉然",   "uid": 672328094,         "room": 22637261},
-    {"name": "贝拉",   "uid": 672353429,         "room": 22632424},
-    {"name": "乃琳",   "uid": 672342685,         "room": 22625027},
-    {"name": "心宜",   "uid": 3537115310721181,  "room": 30849777},
-    {"name": "思诺",   "uid": 3537115310721781,  "room": 30858592},
-]
+# 成员来自项目根 .asoul_config.json，由 main() 加载后填充（见 scripts/asoul_members.py）
+MEMBERS: list = []
 
 WATCH_MINUTES = 25
 HEARTBEAT_INTERVAL = 60
@@ -732,6 +760,13 @@ def main():
     parser.add_argument("--check-only", action="store_true", help="只检测开播状态，不挂机")
     args = parser.parse_args()
 
+    global MEMBERS
+    try:
+        MEMBERS = load_members(require_room=True)
+    except ConfigError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+
     sessdata = args.sessdata
     bili_jct = args.bili_jct
     if not sessdata or not bili_jct:
@@ -806,7 +841,7 @@ def main():
     medals = get_my_medals(sessdata, bili_jct)
 
     if args.until_offline:
-        _LOCK_DIR.mkdir(exist_ok=True)
+        _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
     live_results = []
     for i, m in enumerate(live_members):
@@ -818,9 +853,8 @@ def main():
             lock_valid = False
             try:
                 if lock_pid:
-                    os.kill(int(lock_pid), 0)  # 检查进程是否存在
-                    lock_valid = True
-            except (OSError, ValueError, ProcessLookupError):
+                    lock_valid = _pid_alive(int(lock_pid))
+            except ValueError:
                 pass
             
             if lock_valid:

@@ -19,15 +19,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+from asoul_members import ConfigError, load_members
+
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-MEMBERS = [
-    {"name": "嘉然",   "uid": 672328094},
-    {"name": "贝拉",   "uid": 672353429},
-    {"name": "乃琳",   "uid": 672342685},
-    {"name": "心宜",   "uid": 3537115310721181},
-    {"name": "思诺",   "uid": 3537115310721781},
-]
+# 成员来自项目根 .asoul_config.json，由 main() 加载后填充（见 scripts/asoul_members.py）
+MEMBERS: list = []
 
 _COOKIE_PATHS = [
     Path(__file__).resolve().parent.parent / ".cookies.json",
@@ -425,6 +422,13 @@ def main():
     parser.add_argument("--bili-jct", help="bili_jct cookie")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     args = parser.parse_args()
+
+    global MEMBERS
+    try:
+        MEMBERS = load_members()
+    except ConfigError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not args.month and not args.days:
         print("❌ 请指定 --month 或 --days 参数")

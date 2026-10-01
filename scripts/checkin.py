@@ -15,6 +15,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional, Dict, List
 
+from asoul_members import ConfigError, load_members
+
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 _SEND_URL = "https://api.live.bilibili.com/msg/send"
 
@@ -37,13 +39,8 @@ DEFAULT_MESSAGES = [
     "一直在",
 ]
 
-MEMBERS = [
-    {"name": "嘉然",   "uid": 672328094,         "room": 22637261},
-    {"name": "贝拉",   "uid": 672353429,         "room": 22632424},
-    {"name": "乃琳",   "uid": 672342685,         "room": 22625027},
-    {"name": "心宜",   "uid": 3537115310721181,  "room": 30849777},
-    {"name": "思诺",   "uid": 3537115310721781,  "room": 30858592},
-]
+# 成员来自项目根 .asoul_config.json，由 main() 加载后填充（见 scripts/asoul_members.py）
+MEMBERS: list = []
 
 _COOKIE_PATHS = [
     Path(__file__).resolve().parent.parent / ".cookies.json",
@@ -341,6 +338,13 @@ def main():
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     parser.add_argument("--list", action="store_true", help="列出所有成员")
     args = parser.parse_args()
+
+    global MEMBERS
+    try:
+        MEMBERS = load_members(require_room=True)
+    except ConfigError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if args.list:
         print("🌟 A-SOUL 现役成员：")

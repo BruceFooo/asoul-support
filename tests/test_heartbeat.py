@@ -76,5 +76,32 @@ class X25KnTests(unittest.TestCase):
         sleep.assert_called_once_with(47.5)
 
 
+class PidAliveTests(unittest.TestCase):
+    """锁文件依赖进程存活探测；Windows 上 os.kill(pid, 0) 不可靠。"""
+
+    def test_current_process_is_alive(self):
+        import os
+
+        self.assertTrue(heartbeat._pid_alive(os.getpid()))
+
+    def test_dead_process_is_not_alive(self):
+        import subprocess
+
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        pid = proc.pid
+        proc.wait()
+
+        self.assertFalse(heartbeat._pid_alive(pid))
+
+    def test_bogus_and_zero_pid_are_not_alive(self):
+        self.assertFalse(heartbeat._pid_alive(0))
+        self.assertFalse(heartbeat._pid_alive(999_999_999))
+
+    def test_lock_dir_is_project_local_not_tmp(self):
+        lock_dir = str(heartbeat._LOCK_DIR).replace("\\", "/")
+        self.assertNotIn("/tmp/", lock_dir)
+        self.assertIn(".state/locks", lock_dir)
+
+
 if __name__ == "__main__":
     unittest.main()
