@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 # Change to the asoul-support directory
 asoul_support_dir = Path(__file__).parent.resolve()
@@ -55,31 +56,44 @@ def in_active_window(now_hour: int, start: int, end: int) -> bool:
     return now_hour >= start or now_hour < end  # 跨零点
 
 
-def stop_locked_members(lock_dir: Path, reason: str) -> int:
-    """终止所有仍在运行的挂机进程并清理锁文件（用于离开活跃时段 / 手动关闭）。
+def _stop_lock(lock_file: Path, reason: str) -> bool:
+    """终止一个锁文件对应的挂机进程并删除锁。返回是否真的杀到了进程。"""
+    pid_str = lock_file.read_text().strip()
+    killed = bool(pid_str) and _pid_alive(int(pid_str))
+    if killed:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", pid_str, "/T", "/F"],
+                           capture_output=True, check=False)
+        else:
+            try:
+                os.kill(int(pid_str), signal.SIGTERM)
+            except OSError:
+                pass
+        print(f"  房间 {lock_file.stem}: {reason}，已终止挂机进程 {pid_str}")
+    lock_file.unlink(missing_ok=True)
+    return killed
+
+
+def stop_locked_members(lock_dir: Path, reason: str,
+                        keep_rooms: Optional[set] = None) -> int:
+    """终止锁目录下的挂机进程并清理锁文件。
 
     直接扫描锁目录而不是遍历成员列表——这样即使某成员已被从配置中删除，
     它遗留的挂机进程也能被正确终止。
+
+    keep_rooms=None（默认）：全部终止，用于离开活跃时段 / 手动关闭。
+    keep_rooms 给定时：只终止房间号不在其中的锁，用于“配置里已经没有这个成员了”。
     """
     if not lock_dir.exists():
         return 0
 
     stopped = 0
     for lock_file in sorted(lock_dir.glob("*.lock")):
+        if keep_rooms is not None and lock_file.stem in keep_rooms:
+            continue
         try:
-            pid_str = lock_file.read_text().strip()
-            if pid_str and _pid_alive(int(pid_str)):
-                if os.name == "nt":
-                    subprocess.run(["taskkill", "/PID", pid_str, "/T", "/F"],
-                                   capture_output=True, check=False)
-                else:
-                    try:
-                        os.kill(int(pid_str), signal.SIGTERM)
-                    except OSError:
-                        pass
-                print(f"  房间 {lock_file.stem}: {reason}，已终止挂机进程 {pid_str}")
+            if _stop_lock(lock_file, reason):
                 stopped += 1
-            lock_file.unlink(missing_ok=True)
         except (OSError, ValueError) as exc:
             print(f"  {lock_file.name}: 终止挂机时出错 {type(exc).__name__}: {exc}")
             lock_file.unlink(missing_ok=True)
@@ -180,6 +194,14 @@ def main() -> int:
     print(f"活跃时段 {start:02d}:00-{end:02d}:00（当前 {hour:02d}:00），"
           f"监听成员：{', '.join(m['name'] for m in targets)}")
 
+    # 配置是唯一数据源：成员被删除 / 房间号被改动后，旧房间的挂机进程不该继续跑。
+    # 比较的是全量配置 all_members 而不是本轮的 targets——--members 只是临时筛选，
+    # 不能因此把其他成员的挂机一起杀掉。
+    known_rooms = {str(m["room"]) for m in all_members}
+    orphans = stop_locked_members(LOCK_DIR, "已不在配置中", keep_rooms=known_rooms)
+    if orphans:
+        print(f"  已停止 {orphans} 个不在配置中的挂机进程。")
+
     live_status = get_live_status()
     print(f"Current live members: {[m['name'] for m in live_status.values()]}")
 
@@ -225,10 +247,11 @@ def main() -> int:
             else:
                 print(f"  {name}: Heartbeat process already running (PID from lock file)")
         else:
-            # Member is not live
+            # 主播没开播：残留的挂机进程已经没有意义。
+            # 注意必须连进程一起杀掉再删锁——只删锁会让进程变成没有锁的“幽灵”，
+            # 下轮开播时 manage 看不到锁就会再起一个，同房间出现两个心跳进程。
             if lock_file.exists():
-                print(f"  {name}: Member is not live, but lock file exists -> removing")
-                lock_file.unlink()
+                _stop_lock(lock_file, "主播未开播")
             else:
                 print(f"  {name}: Member is not live, no lock file")
 

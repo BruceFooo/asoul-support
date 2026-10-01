@@ -127,6 +127,31 @@ class StopMemberTests(unittest.TestCase):
             self.assertEqual(stopped, 2)
             self.assertEqual(list(lock_dir.glob("*.lock")), [])
 
+    def test_keep_rooms_spares_current_members(self):
+        """成员被删掉后，只有它的挂机进程该停，其余成员照常跑。"""
+        with tempfile.TemporaryDirectory() as d:
+            lock_dir = Path(d)
+            (lock_dir / "22637261.lock").write_text("111")  # 仍在配置里
+            (lock_dir / "99999999.lock").write_text("222")  # 已从配置删除
+            with patch.object(mgr, "_pid_alive", return_value=True), \
+                 patch.object(mgr.subprocess, "run") as run:
+                stopped = mgr.stop_locked_members(lock_dir, "已不在配置中",
+                                                  keep_rooms={"22637261"})
+            self.assertEqual(stopped, 1)
+            run.assert_called_once()
+            self.assertEqual([p.name for p in lock_dir.glob("*.lock")], ["22637261.lock"])
+
+    def test_keep_rooms_none_kills_everything(self):
+        with tempfile.TemporaryDirectory() as d:
+            lock_dir = Path(d)
+            (lock_dir / "22637261.lock").write_text("111")
+            (lock_dir / "99999999.lock").write_text("222")
+            with patch.object(mgr, "_pid_alive", return_value=True), \
+                 patch.object(mgr.subprocess, "run"):
+                stopped = mgr.stop_locked_members(lock_dir, "手动关闭")
+            self.assertEqual(stopped, 2)
+            self.assertEqual(list(lock_dir.glob("*.lock")), [])
+
     def test_missing_lock_dir_is_noop(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(mgr.stop_locked_members(Path(d) / "nope", "test"), 0)
