@@ -23,6 +23,7 @@ sys.path.insert(0, str(asoul_support_dir / "scripts"))
 from asoul_members import ConfigError, load_config, load_members  # noqa: E402
 from local_time import in_active_window, local_hour  # noqa: E402
 import like_room  # noqa: E402
+from night_light import night_light_due  # noqa: E402
 
 
 def current_hour() -> int:
@@ -318,6 +319,13 @@ def main() -> int:
                     _stop_lock(lock_dir / f"{room_id}.lock", f"主播未开播，停止{label}")
                 else:
                     print(f"  {name}: 未开播，没有{label}进程")
+
+    # 过了 night_light.after_hour 就不再受挂机时段约束：挂机照跑到时段结束，
+    # 但每轮也顺带查一次点亮，免得像从前那样非等到挂机时段整个结束才做。
+    # 全员还在播就不必跑了——night_light 只会一个个跳过，白打一次接口。
+    due = night_light_due(hour, start, end, config["settings"]["night_light"]["after_hour"])
+    if due and any(m["name"] not in live_status for m in targets):
+        run_night_light(targets, config["settings"], only_names=args.members)
 
     print("Done.")
     return 0

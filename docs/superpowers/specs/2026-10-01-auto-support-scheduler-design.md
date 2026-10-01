@@ -123,6 +123,17 @@ scripts/asoul_members.py 修改  增加 load_settings()
 同步跑一次 night_light（它自己跳过在直播的房间）
 ```
 
+**过了 `night_light.after_hour`（默认 1 点）**
+
+```
+挂机/点赞照常（时段内）
+再查一次 night_light —— 只要有成员没在播；全员在播就跳过，不起子进程
+```
+
+触发时刻与 `active_hours` 解耦：`after_hour` 一到就查，挂机跑到时段结束为止。
+`night_light_due(hour, active_start, active_end, after_hour)` 的判据是
+「不在 `[active_start, after_hour)` 这段里」，用 `in_active_window` 表达，跨零点自然成立。
+
 ## 状态与防重
 
 ```json
@@ -141,9 +152,11 @@ scripts/asoul_members.py 修改  增加 load_settings()
 
 - `live_api`：点赞响应解析（`credited < requested` → 判定触上限并停）；分享失败不阻塞弹幕
 - `like_room`：随机间隔落在配置区间；点满即停；触上限即停并如实记录；跨天重置；断电续点
-- `night_light`：在播则跳过；已点亮则跳过；`attempts` 上限；弹幕内容序列正确
-- 配置：`danmaku`/`like`/`share` 缺省值；非法值报 `ConfigError`
-- `manage`：活跃时段起两个进程；睡眠时段跑 E3 且不重复
+- `night_light`：在播则跳过；已点亮则跳过；`attempts` 上限；弹幕内容序列正确；
+  `night_light_due` 的时段边界（19→4 时 1-3 点该点亮、19-0 点不该）
+- 配置：`danmaku`/`like`/`share`/`night_light` 缺省值；非法值报 `ConfigError`
+- `manage`：活跃时段起两个进程；睡眠时段跑 E3 且不重复；挂机时段内过了 `after_hour`
+  也跑 E3，全员在播则不跑
 
 ## 前置探针（不进正式代码）
 
@@ -223,7 +236,7 @@ scripts/asoul_members.py 修改  增加 load_settings()
   发没发出去会误判，只能看 `code`。`live_api.send_danmaku` 本就是只看 `code`。
 - **未开播的直播间也能发弹幕、也能分享**（均 `code: 0`）。E3 依赖这一点成立。
 
-### 实现后补的两处缺口（均已修）
+### 实现后补的三处缺口（均已修）
 
 1. **开播问候没做每晚去重。** 挂机进程崩了会被 `manage` 重新拉起，而那时主播
    通常还在播，问候弹幕就会跟着每次重启重复发。补法与 E3 一致：
@@ -235,6 +248,11 @@ scripts/asoul_members.py 修改  增加 load_settings()
    （`danmaku` / `like` / `night_light`，缺省 `true`），调度器侧跳过。
    `danmaku.enabled=false` 的语义是「一条弹幕都不发」，下播点亮仍会分享；
    只想去掉整个 E3 用 `night_light.enabled`。
+3. **E3 的触发时刻原本挂在 `active_hours` 上，配置成 19→4 时整晚都不触发。**
+   设计里 E3 只有「睡眠时段」一个入口，而 02:00 仍在挂机时段内 → 走活跃分支 →
+   `run_night_light` 一次都没被调用过（实测 `logs/manage.log` 里 0 次、`.state/night_light/`
+   目录根本没生成），要等到 04:00 才轮到。这与「1 点后下播就发」的原始需求不符。
+   改为按 `night_light.after_hour`（缺省 1）触发，与挂机时段解耦，两个分支都会查。
 
 配置文件里的注释：JSON 不支持，试过在加载器里剥 `//`（可行），但编辑器会标红、
 其他按严格 JSON 读它的工具会炸，换来一个自维护的解析器不划算。改为把带注释的

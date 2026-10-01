@@ -363,7 +363,7 @@ CONFIG = {
         "like": {"enabled": True, "target": 500, "batch": 10,
                  "interval": {"min": 1.0, "max": 3.0}},
         "share": {"on_live": True, "after_offline": True},
-        "night_light": {"enabled": True},
+        "night_light": {"enabled": True, "after_hour": 1},
     },
 }
 
@@ -379,11 +379,11 @@ class MainWiringTests(_LockFixture):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _run(self, hour, live=False, argv=()):
+    def _run(self, hour, live=False, argv=(), config=None):
         live_status = {"枯水": MEMBER} if live else {}
         with patch.object(sys, "argv", ["manage_asoul_heartbeat.py", *argv]), \
              patch.object(mgr, "current_hour", return_value=hour), \
-             patch.object(mgr, "load_config", return_value=CONFIG), \
+             patch.object(mgr, "load_config", return_value=config or CONFIG), \
              patch.object(mgr, "load_members", return_value=[MEMBER]), \
              patch.object(mgr, "get_live_status", return_value=live_status), \
              patch.object(mgr, "start_heartbeat") as hb, \
@@ -426,6 +426,29 @@ class MainWiringTests(_LockFixture):
         rc, hb, like, night = self._run(hour=2, live=True, argv=["--ignore-window"])
         self.assertEqual(rc, 0)
         hb.assert_called_once()
+        night.assert_not_called()
+
+    def _hangup_config(self, after_hour=1):
+        config = json.loads(json.dumps(CONFIG))
+        config["active_hours"] = {"start": 19, "end": 4}
+        config["settings"]["night_light"]["after_hour"] = after_hour
+        return config
+
+    def test_hangup_window_still_lights_after_after_hour(self):
+        """回归：挂机 19→4 时 2 点仍在时段内，从前点亮要拖到 4 点才做。"""
+        rc, hb, like, night = self._run(hour=2, config=self._hangup_config())
+        self.assertEqual(rc, 0)
+        night.assert_called_once_with([MEMBER], CONFIG["settings"], only_names=None)
+
+    def test_hangup_window_does_not_light_before_after_hour(self):
+        rc, hb, like, night = self._run(hour=2, config=self._hangup_config(after_hour=3))
+        self.assertEqual(rc, 0)
+        night.assert_not_called()
+
+    def test_all_live_skips_the_night_light_check(self):
+        """全员还在播就别起子进程了——night_light 只会一个个跳过。"""
+        rc, hb, like, night = self._run(hour=2, live=True, config=self._hangup_config())
+        self.assertEqual(rc, 0)
         night.assert_not_called()
 
 

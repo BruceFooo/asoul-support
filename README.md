@@ -38,7 +38,7 @@
 | 💓 **心跳挂机涨亲密度** | 需要开播 | X25Kn E/X 协议；结束后记录亲密度前后值和实际增量 |
 | 🎉 **开播问候** | 需要开播 | 分享直播间 + 发一条问候弹幕（内容可配置） |
 | 👍 **直播间点赞** | 需要开播 | 点满配置的次数后停止，随机间隔模拟手动点击 |
-| 🌙 **下播点亮** | 下播后 | 活跃时段结束后，若没在播则分享 + 连发 10 条弹幕，每晚一次 |
+| 🌙 **下播点亮** | 下播后 | 过了 `night_light.after_hour`（默认 1 点），若没在播则分享 + 连发 10 条弹幕，每晚一次 |
 | 🏅 **粉丝牌手动点亮** | 需要开播 | `checkin.py --live-only`：发 10 条弹幕，保持 3 天可见 |
 | 🪙 **自动投币** | 无 | 给成员视频投币（1 币 = 10 亲密度），需用户明确开启 |
 | 👍 **视频自动点赞** | 无 | 自动给成员新视频点赞（默认每周执行，避免风控） |
@@ -274,10 +274,9 @@ python3 scripts/videos.py --days 7 --coin --fav
     { "name": "贝拉", "uid": 672353429, "room": 22632424 }
   ],
 
-  // 活跃时段，支持跨零点。21 → 1 即 21:00-00:59 活跃，其余时间睡眠。
-  // 时段内做「挂机 + 点赞」，时段外做「下播点亮」。start == end 表示全天
-  //（那样下播点亮永远不会触发）。整段可省略 = 全天。
-  "active_hours": { "start": 21, "end": 1 },
+  // 活跃时段，支持跨零点。19 → 4 即 19:00-03:59 挂机，其余时间睡眠。
+  // 时段内做「挂机 + 点赞」。start == end 表示全天挂机。整段可省略 = 全天。
+  "active_hours": { "start": 19, "end": 4 },
 
   // 弹幕。false = 一条都不发（开播问候、下播点亮都变成只分享）
   "danmaku": {
@@ -299,11 +298,15 @@ python3 scripts/videos.py --days 7 --coin --fav
   "share": { "on_live": true, "after_offline": true },
 
   // 下播点亮。false = 整段不做。只想去掉弹幕、保留分享 → 用上面的 danmaku.enabled
-  "night_light": { "enabled": true }
+  "night_light": {
+    "enabled": true,
+    "after_hour": 1      // 几点之后开始查。与 active_hours 解耦：挂机 19→4 时
+                         // 1 点一到就查，不必等挂机时段整个结束（4 点）才做
+  }
 }
 ```
 
-四段都可以整段省略，用内置默认值；三个 `enabled` 缺省都是 `true`。
+四段都可以整段省略，用内置默认值；三个 `enabled` 缺省都是 `true`，`after_hour` 缺省 `1`。
 配置文件**缺失或格式非法直接报错退出**，不会静默回退到内置名单。
 
 所有开关的状态每轮巡检都会写进日志（`配置中已关闭：弹幕、点赞`），
@@ -342,7 +345,9 @@ python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
    | `heartbeat.py --until-offline --members <成员>` | `.state/locks/<房间号>.lock` | `logs/heartbeat_<成员>_<时间戳>.log` |
    | `like_room.py --members <成员>` | `.state/like_locks/<房间号>.lock` | `logs/like_<成员>_<时间戳>.log` |
 
-   已点满的房间不会重复拉起点赞进程；**没在播**的成员则两个进程都杀掉并删锁。
+   已点满的房间不会重复拉起点赞进程；**没在播**的成员则两个进程都杀掉并删锁；
+4. **过了 `night_light.after_hour`**，不管在不在时段内都再查一次下播点亮——
+   挂了机也照查，只要有成员没在播。全员还在播就跳过，不起子进程。
 
 这些后台进程**独立于计划任务存活**（挂机到下播、点赞到点满），所以每 5 分钟是**巡检频率**而不是执行间隔。锁文件防重复启动，`MultipleInstancesPolicy=IgnoreNew` 防任务自身叠加。
 
@@ -352,7 +357,10 @@ python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 |------|----------|------|
 | **开播问候** | `heartbeat.py` 确认开播时 | 分享（`share.on_live`）+ 发一条 `danmaku.on_live` |
 | **开播点赞** | `manage` 拉起 `like_room.py` | 随机间隔点赞，点满 `like.target` 即停；返回非 0（触顶/风控）也停 |
-| **下播点亮** | 时段结束后房间**没在播**时 | 分享（`share.after_offline`）+ 按序发 `danmaku.after_offline` |
+| **下播点亮** | `night_light.after_hour` 之后房间**没在播**时 | 分享（`share.after_offline`）+ 按序发 `danmaku.after_offline` |
+
+下播点亮与挂机时段**互不影响**：`after_hour` 一到就开始查，挂机继续跑到时段结束。
+在直播的房间永远跳过，这条 `--force` 也不破例。
 
 后两个都是**每晚一次**的语义，进度按天存盘（`.state/night_light/`、`.state/greetings/`），
 中途被杀会接着做而不是从头再来。问候之所以也要存盘：挂机进程崩了会被重新拉起，

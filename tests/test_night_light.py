@@ -22,7 +22,7 @@ SETTINGS = {
     "like": {"enabled": True, "target": 500, "batch": 10,
              "interval": {"min": 1.0, "max": 3.0}},
     "share": {"on_live": True, "after_offline": True},
-    "night_light": {"enabled": True},
+    "night_light": {"enabled": True, "after_hour": 1},
 }
 
 MEMBER = {"name": "枯水", "uid": 699438, "room": 281}
@@ -236,6 +236,25 @@ class LightMemberTests(_StateFixture):
         self.assertTrue(night_light.load_state(281, TODAY)["done"])
 
 
+class NightLightDueTests(unittest.TestCase):
+    """触发时刻：挂机时段里 after_hour 之前的那一段要排除掉。"""
+
+    def test_before_after_hour_is_not_due(self):
+        for hour in (19, 20, 21, 22, 23, 0):
+            with self.subTest(hour=hour):
+                self.assertFalse(night_light.night_light_due(hour, 19, 4, 1))
+
+    def test_from_after_hour_onwards_is_due(self):
+        # 1-3 点仍在挂机时段内，但已经该点亮了；4 点之后是挂机时段外
+        for hour in (1, 2, 3, 4, 12, 18):
+            with self.subTest(hour=hour):
+                self.assertTrue(night_light.night_light_due(hour, 19, 4, 1))
+
+    def test_all_day_hangup_only_looks_at_after_hour(self):
+        self.assertFalse(night_light.night_light_due(0, 0, 0, 1))
+        self.assertTrue(night_light.night_light_due(1, 0, 0, 1))
+
+
 class MainTests(_StateFixture):
     def setUp(self):
         super().setUp()
@@ -277,10 +296,28 @@ class MainTests(_StateFixture):
         self.assertEqual(client.share_calls, [])
         self.assertEqual(night_light.load_state(281, TODAY)["attempts"], 0)
 
-    def test_refuses_during_active_window(self):
+    def test_refuses_before_after_hour(self):
         client = FakeClient()
         client.live = {281: {"live_status": 0}}
         self.assertEqual(self._run(client, hour=22), 0)
+        self.assertEqual(client.danmaku_calls, [])
+
+    def test_lights_inside_the_hangup_window_once_past_after_hour(self):
+        """挂机 19→4 也得在 1 点后点亮，不能等到挂机时段整个结束才做。"""
+        client = FakeClient()
+        client.live = {281: {"live_status": 0}}
+        config = json.loads(json.dumps(CONFIG))
+        config["active_hours"] = {"start": 19, "end": 4}
+        self.assertEqual(self._run(client, config=config, hour=2), 0)
+        self.assertEqual(len(client.danmaku_calls), 3)
+
+    def test_refuses_inside_the_hangup_window_before_after_hour(self):
+        client = FakeClient()
+        client.live = {281: {"live_status": 0}}
+        config = json.loads(json.dumps(CONFIG))
+        config["active_hours"] = {"start": 19, "end": 4}
+        config["settings"]["night_light"]["after_hour"] = 3
+        self.assertEqual(self._run(client, config=config, hour=2), 0)
         self.assertEqual(client.danmaku_calls, [])
 
     def test_force_overrides_the_window(self):

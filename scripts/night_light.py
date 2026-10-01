@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """E3：下播点亮。
 
-活跃时段结束（默认 1 点）之后，若成员**不在直播**，则分享直播间并发送
-`settings["danmaku"]["after_offline"]` 里的弹幕（默认 "1" 到 "10"），
-每条之间随机间隔 `settings["danmaku"]["interval"]` 秒。
+`settings["night_light"]["after_hour"]`（默认 1 点）之后，若成员**不在直播**，
+则分享直播间并发送 `settings["danmaku"]["after_offline"]` 里的弹幕
+（默认 "1" 到 "10"），每条之间随机间隔 `settings["danmaku"]["interval"]` 秒。
+
+触发时刻与挂机时段（`active_hours`）解耦：挂机 19→4 时，1 点一到就开始查点亮，
+不必等挂机时段整个结束。挂机时段里 1 点之前的那段仍然不查——那会儿成员多半
+正在播。
 
 在直播就什么都不发——这条是硬规则，`--force` 也不行。
 
-由 manage_asoul_heartbeat.py 在睡眠时段每 5 分钟调一次：房间还开着就跳过，
-等它下播；一旦下播就当晚发一次，之后不再重复。
+由 manage_asoul_heartbeat.py 每 5 分钟调一次（过了 after_hour 之后）：房间还开着
+就跳过，等它下播；一旦下播就当晚发一次，之后不再重复。
 
 状态按房间存在 `.state/night_light/<room>.json`，记录已发到第几条，
 进程被杀后接着发而不是重头再来。发送失败会记一次尝试，连续 3 次当晚放弃，
@@ -34,6 +38,20 @@ STATE_DIR = ROOT / ".state" / "night_light"
 
 # 同一晚最多尝试几次发送。超了就放弃，等下一天。
 MAX_ATTEMPTS = 3
+
+
+def night_light_due(hour: int, active_start: int, active_end: int, after_hour: int) -> bool:
+    """现在到点了吗——能不能开始检查下播点亮。
+
+    挂机时段里 `after_hour` 之前的那一段不算：那会儿还在挂机，成员多半正在播，
+    点亮要等到 `after_hour` 之后再查。所以「到点」= 不在 `[active_start, after_hour)`
+    这段里。用 `in_active_window` 判断，跨零点（19 → 1）自然成立。
+
+    `active_start == active_end` 表示全天挂机，没有该排除的一段，只看 `after_hour`。
+    """
+    if active_start == active_end:
+        return hour >= after_hour
+    return not in_active_window(hour, active_start, after_hour)
 
 
 def _state_path(room: int) -> Path:
@@ -152,7 +170,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="下播后分享直播间并发送弹幕（每晚一次）")
     parser.add_argument("--members", help="只处理这些成员（逗号分隔），默认全部")
     parser.add_argument("--force", action="store_true",
-                        help="忽略活跃时段限制，立刻执行（在直播的房间仍然跳过）")
+                        help="忽略 night_light.after_hour 限制，立刻执行（直播中的房间仍然跳过）")
     return parser.parse_args()
 
 
@@ -184,10 +202,11 @@ def main() -> int:
         print("下播点亮已在配置中关闭（night_light.enabled = false），退出。")
         return 0
 
-    start, end = config["active_hours"]["start"], config["active_hours"]["end"]
+    active = config["active_hours"]
+    after_hour = settings["night_light"]["after_hour"]
     hour = local_hour()
-    if in_active_window(hour, start, end) and not args.force:
-        print(f"当前 {hour:02d}:00 仍在活跃时段 {start:02d}:00-{end:02d}:00，不点亮。"
+    if not night_light_due(hour, active["start"], active["end"], after_hour) and not args.force:
+        print(f"当前 {hour:02d}:00 还没到点亮时刻（{after_hour:02d}:00 之后才开始），跳过。"
               f"（要强制执行加 --force）")
         return 0
 

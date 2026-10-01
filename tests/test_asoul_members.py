@@ -196,6 +196,7 @@ class SettingsTests(_ConfigFixture):
         self.assertEqual(s["like"]["batch"], 10)
         self.assertEqual(s["like"]["interval"], {"min": 1.0, "max": 3.0})
         self.assertEqual(s["share"], {"on_live": True, "after_offline": True})
+        self.assertEqual(s["night_light"]["after_hour"], 1)
         # 三个开关缺省都是开着的——默认行为不该因为配置文件里没写就悄悄变
         self.assertTrue(s["danmaku"]["enabled"])
         self.assertTrue(s["like"]["enabled"])
@@ -217,6 +218,19 @@ class SettingsTests(_ConfigFixture):
                 with self.assertRaises(ConfigError) as ctx:
                     self._settings(**{section: {"enabled": "yes"}})
                 self.assertIn(f"{section}.enabled", str(ctx.exception))
+
+    def test_after_hour_must_be_an_hour(self):
+        for bad in (24, -1, "1", 1.5, True, None):
+            with self.subTest(after_hour=bad):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._settings(night_light={"after_hour": bad})
+                self.assertIn("night_light.after_hour", str(ctx.exception))
+
+    def test_after_hour_can_be_set(self):
+        for good in (0, 1, 23):
+            with self.subTest(after_hour=good):
+                s = self._settings(night_light={"after_hour": good})
+                self.assertEqual(s["night_light"]["after_hour"], good)
 
     def test_partial_danmaku_falls_back_per_field(self):
         s = self._settings(danmaku={"interval": {"min": 5, "max": 9}})
@@ -275,7 +289,7 @@ class SettingsTests(_ConfigFixture):
                 self.assertIn("share.on_live", str(ctx.exception))
 
     def test_section_must_be_object(self):
-        for key in ("danmaku", "like", "share"):
+        for key in ("danmaku", "like", "share", "night_light"):
             with self.subTest(section=key):
                 with self.assertRaises(ConfigError):
                     self._settings(**{key: ["not", "an", "object"]})

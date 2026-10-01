@@ -65,13 +65,7 @@ def _parse_hours(raw) -> Dict[str, int]:
     if not isinstance(raw, dict):
         raise _fail('active_hours 必须是对象，如 {"start": 21, "end": 1}')
 
-    hours = {}
-    for key in ("start", "end"):
-        value = raw.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 23:
-            raise _fail(f"active_hours.{key} 必须是 0-23 的整数，实际是 {value!r}")
-        hours[key] = value
-    return hours
+    return {key: _hour(raw.get(key), f"active_hours.{key}") for key in ("start", "end")}
 
 
 _DEFAULT_SETTINGS = {
@@ -100,6 +94,10 @@ _DEFAULT_SETTINGS = {
     "night_light": {
         # false = 下播点亮整段不做（不分享也不发弹幕）
         "enabled": True,
+        # 几点之后可以点亮。与 active_hours 解耦：到了这个点，即使还在挂机
+        # 时段内也照样检查「没在播就发」，这样挂机能一直到下播，点亮也不会被
+        # 拖到挂机时段结束才做。
+        "after_hour": 1,
     },
 }
 
@@ -134,6 +132,12 @@ def _messages(raw, where: str) -> List[str]:
 def _bool_setting(raw, where: str) -> bool:
     if not isinstance(raw, bool):
         raise _fail(f"{where} 必须是 true 或 false，实际是 {raw!r}")
+    return raw
+
+
+def _hour(raw, where: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 23:
+        raise _fail(f"{where} 必须是 0-23 的整数，实际是 {raw!r}")
     return raw
 
 
@@ -186,6 +190,8 @@ def _parse_settings(data: Dict) -> Dict:
         "night_light": {
             "enabled": _bool_setting(nl_raw.get("enabled", n_def["enabled"]),
                                      "night_light.enabled"),
+            "after_hour": _hour(nl_raw.get("after_hour", n_def["after_hour"]),
+                                "night_light.after_hour"),
         },
     }
 
@@ -214,7 +220,7 @@ def load_config() -> Dict:
 
 
 def load_settings() -> Dict:
-    """只取弹幕 / 点赞 / 分享三段设置（已填好默认值并校验）。"""
+    """只取弹幕 / 点赞 / 分享 / 下播点亮四段设置（已填好默认值并校验）。"""
     return load_config()["settings"]
 
 
