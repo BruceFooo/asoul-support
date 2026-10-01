@@ -22,7 +22,7 @@
 ---
 
 > **本 fork 与上游的差别**
-> 这是 `BruceFooo/asoul-support`，fork 自 `XiaoYiWeio/asoul-support`，`main` 比上游 `main` 领先 12 个提交（25 个文件，+4348/−151）。上游只有「挂机心跳 + 视频/动态点赞」两件事，成员名单写死在代码里；本 fork 把它重构成**三事件调度器**——成员表收敛到 `.asoul_config.json` 作为唯一数据源，抽出 `live_api` / `wbi` / `local_time` 共享模块，新增 `like_room.py`（直播间点赞）与 `night_light.py`（下播点亮），`manage_asoul_heartbeat.py` 改为按事件管理挂机与点赞子进程（锁文件防重复启动，进程独立于计划任务存活到下播或点满为止）。三个行为各带 `enabled` 开关，开播问候与下播点亮按天去重、进程重启不重发，并补了 224 个用例的测试套件。
+> fork 自 `XiaoYiWeio/asoul-support`。上游只有「挂机心跳 + 视频/动态点赞」，成员名单写死在代码里；本 fork 重构成**三事件调度器**——成员表收到 `.asoul_config.json`，新增直播间点赞与下播点亮两个行为，调度器按事件管理挂机/点赞子进程（独立于计划任务存活到下播或点满）。三个行为各带 `enabled` 开关，开播问候与下播点亮每晚只发一次，重启不重发。
 
 ## 🚀 一句话安装
 
