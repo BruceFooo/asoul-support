@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sys
+import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -151,8 +152,9 @@ class SignTests(unittest.TestCase):
 
 # ── LiveClient ─────────────────────────────────────────────
 
-def _client() -> LiveClient:
-    return LiveClient("SESS", "JCT")
+def _client(buvid3="TESTBUVID") -> LiveClient:
+    """默认注入固定的 buvid3——否则 headers() 会去网络取设备指纹。"""
+    return LiveClient("SESS", "JCT", buvid3=buvid3)
 
 
 class HeadersTests(unittest.TestCase):
@@ -165,6 +167,58 @@ class HeadersTests(unittest.TestCase):
 
     def test_referer_without_room(self):
         self.assertEqual(_client().headers()["Referer"], "https://live.bilibili.com")
+
+
+SPI_OK = {"code": 0, "data": {"b_3": "SPI-BUVID-3", "b_4": "SPI-BUVID-4"}}
+
+
+class BuvidTests(unittest.TestCase):
+    """点赞接口不带 buvid3 会被风控拦（-352）——实测过，必须带上。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cache = Path(self._tmp.name) / "buvid3.txt"
+        patcher = patch.object(live_api, "_BUVID_CACHE", self.cache)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_included_in_cookie_when_provided(self):
+        self.assertTrue(_client().headers()["Cookie"].startswith("buvid3=TESTBUVID; "))
+
+    def test_fetched_from_spi_and_cached_to_disk(self):
+        with patch.object(live_api, "_http", return_value=_fresh(SPI_OK)) as http:
+            headers = LiveClient("S", "J").headers()
+        self.assertIn("buvid3=SPI-BUVID-3", headers["Cookie"])
+        self.assertIn("finger/spi", http.call_args[0][1])
+        self.assertEqual(self.cache.read_text(), "SPI-BUVID-3")
+
+    def test_disk_cache_avoids_a_request(self):
+        self.cache.write_text("CACHED-BUVID")
+        with patch.object(live_api, "_http") as http:
+            headers = LiveClient("S", "J").headers()
+        http.assert_not_called()
+        self.assertIn("buvid3=CACHED-BUVID", headers["Cookie"])
+
+    def test_fetches_only_once_per_client(self):
+        with patch.object(live_api, "_http", return_value=_fresh(SPI_OK)) as http:
+            client = LiveClient("S", "J")
+            client.headers()
+            client.headers()
+        self.assertEqual(http.call_count, 1)
+
+    def test_failure_degrades_to_omitting_it(self):
+        """取不到就只是不带这个 cookie，不能让整条链路挂掉。"""
+        with patch.object(live_api, "_http", return_value={"code": -1, "message": "boom"}):
+            cookie = LiveClient("S", "J").headers()["Cookie"]
+        self.assertNotIn("buvid3", cookie)
+        self.assertIn("SESSDATA=S", cookie)
+
+    def test_empty_payload_is_not_cached(self):
+        with patch.object(live_api, "_http", return_value={"code": 0, "data": {}}):
+            cookie = LiveClient("S", "J").headers()["Cookie"]
+        self.assertNotIn("buvid3", cookie)
+        self.assertFalse(self.cache.exists())
 
 
 class RealRoomIdTests(unittest.TestCase):

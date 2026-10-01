@@ -23,6 +23,8 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 LIVE_HOST = "https://live.bilibili.com"
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+# 设备指纹（buvid3）来源。公开接口，不需要登录。
+BUVID_URL = "https://api.bilibili.com/x/frontend/finger/spi"
 ROOM_INFO_URL = "https://api.live.bilibili.com/room/v1/Room/get_info"
 LIVE_STATUS_URL = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
 SEND_DANMAKU_URL = "https://api.live.bilibili.com/msg/send"
@@ -39,6 +41,22 @@ _COOKIE_PATHS = [
     Path(__file__).resolve().parent.parent / ".cookies.json",
     Path(__file__).resolve().parent.parent.parent / "bilibili-live-checkin" / ".cookies.json",
 ]
+_BUVID_CACHE = Path(__file__).resolve().parent.parent / ".state" / "buvid3.txt"
+
+
+def _load_cached_buvid() -> Optional[str]:
+    try:
+        return _BUVID_CACHE.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _save_buvid(value: str) -> None:
+    try:
+        _BUVID_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _BUVID_CACHE.write_text(value, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def load_cookies() -> Optional[Dict[str, str]]:
@@ -79,11 +97,13 @@ class LiveClient:
     缓存两样东西：自己的 uid、短号→真实房间号。两者进程内都不变。
     """
 
-    def __init__(self, sessdata: str, bili_jct: str):
+    def __init__(self, sessdata: str, bili_jct: str, buvid3: Optional[str] = None):
         self._sessdata = sessdata
         self._bili_jct = bili_jct
         self._uid: Optional[int] = None
         self._rooms: Dict[int, int] = {}
+        self._buvid3 = buvid3
+        self._buvid_done = buvid3 is not None
         self._signer = WbiSigner(self._nav_keys)
 
     # ── 基础 ──────────────────────────────────────────────
@@ -92,11 +112,35 @@ class LiveClient:
         """WBI 密钥来源：走统一的 _http，便于测试整体 mock。"""
         return wbi.keys_from_nav(_http("GET", NAV_URL, self.headers()))
 
+    def _buvid(self) -> Optional[str]:
+        """设备指纹。取一次就缓存到 .state/buvid3.txt，跨进程保持同一个「设备」。
+
+        点赞接口（likeReportV3）不带 buvid3 会直接被风控拦掉，返回 -352；
+        补上之后同样的请求就能过。同一台机器上每次跑都换一个新 buvid3 反而更像
+        异常客户端，所以落盘复用。
+        """
+        if not self._buvid_done:
+            self._buvid_done = True
+            self._buvid3 = _load_cached_buvid()
+            if self._buvid3 is None:
+                resp = _http("GET", BUVID_URL, {
+                    "User-Agent": _UA, "Referer": "https://www.bilibili.com/",
+                })
+                value = (resp.get("data") or {}).get("b_3") if resp.get("code") == 0 else None
+                if value:
+                    self._buvid3 = value
+                    _save_buvid(value)
+        return self._buvid3
+
     def headers(self, referer_room: Optional[int] = None) -> dict:
         referer = f"{LIVE_HOST}/{referer_room}" if referer_room else LIVE_HOST
+        cookie = f"SESSDATA={self._sessdata}; bili_jct={self._bili_jct}"
+        buvid = self._buvid()
+        if buvid:
+            cookie = f"buvid3={buvid}; {cookie}"
         return {
             "User-Agent": _UA,
-            "Cookie": f"SESSDATA={self._sessdata}; bili_jct={self._bili_jct}",
+            "Cookie": cookie,
             "Origin": LIVE_HOST,
             "Referer": referer,
         }

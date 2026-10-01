@@ -255,6 +255,7 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `.state/like_locks/` | 点赞进程锁（运行时生成，已 gitignore） |
 | `.state/likes/` | 点赞进度，按天存（运行时生成，已 gitignore） |
 | `.state/night_light/` | 下播点亮进度，按天存（运行时生成，已 gitignore） |
+| `.state/buvid3.txt` | 设备指纹 cookie，自动获取并复用（运行时生成，已 gitignore） |
 | `logs/` | 运行日志（已 gitignore） |
 
 ### 配置示例
@@ -286,12 +287,17 @@ python3 scripts/videos.py --days 7 --coin --fav
   - **加主播 = 在这里加一条**；删成员 = 删掉那一条。不要写"只填名字"的简写——uid 和 room 必须显式给出。
 - `active_hours`：可选，缺省为全天。支持跨零点，`{"start": 21, "end": 1}` 表示 21:00–00:59 活跃，其余时间睡眠；`start == end` 表示全天。
 - `danmaku`：`on_live` 是开播时随机取一条发的问候；`after_offline` 是下播点亮时按顺序发的弹幕（每条之间随机等 `interval.min`–`interval.max` 秒）。
-- `like`：`target` 是每晚点赞目标次数；`batch` 是每次请求汇总上报几次点击（网页前端就是这么攒着报的，服务端若报错就调小它，最小 1）；`interval` 是两次请求之间随机等待的秒数。
+- `like`：`target` 是每晚点赞目标次数；`batch` 是每次请求汇总上报几次点击（网页前端就是这么攒着报的，实测 50 以内都接受）；`interval` 是两次请求之间随机等待的秒数。
 - `share`：开播 / 下播点亮时是否分享直播间。
 - 上面三段都可以整段省略，用内置默认值。配置文件**缺失或格式非法会直接报错退出**（不会静默回退到内置名单）——宁可报错，也不要用错的人名单跑挂机。
 
 > `uid` 是空间号（`space.bilibili.com/<uid>`），`room` 是直播间号（`live.bilibili.com/<room>`），两者**不相等**，别填混。
-> `room` 写浏览器地址栏那个**短号**（如 `281`）即可，脚本会自动换成接口需要的真实房间号（`49728`）。
+> `room` 写浏览器地址栏那个**短号**（如 `281`）即可：脚本会先用 `room/v1/Room/get_info`
+> 解析出真实房间号（`281` → `49728`）再调接口，解析结果进程内缓存，解析失败则原样使用。
+
+> ⚠️ 点赞接口成功时返回的 `data` 是空的，**服务端不会告诉你这次实际计入了几次**。
+> 所以「点满 500 次」的意思是发够了这么多次请求，不等于服务端全部计入；
+> 触到上限或风控时接口会返回非 0，脚本据此停止。
 
 ### 开关与状态
 
@@ -324,10 +330,16 @@ python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 | 事件 | 触发时机 | 动作 |
 |------|----------|------|
 | **开播问候** | `heartbeat.py` 确认开播时 | 分享直播间（`share.on_live`）+ 发一条 `danmaku.on_live` |
-| **开播点赞** | 由 `manage` 拉起 `like_room.py` | 随机间隔点赞，点满 `like.target` 即停；触到服务端上限也立即停 |
+| **开播点赞** | 由 `manage` 拉起 `like_room.py` | 随机间隔点赞，点满 `like.target` 即停；接口返回非 0（触顶 / 风控）也立即停 |
 | **下播点亮** | 活跃时段结束后，房间**没在播**时 | 分享直播间（`share.after_offline`）+ 按序发 `danmaku.after_offline`，随机间隔；**每晚只发一次** |
 
 下播点亮由睡眠时段的每 5 分钟轮询实现，也就是「一直等，下播就发」：房间还开着就跳过，等它下播。进度按天存在 `.state/night_light/<房间号>.json`，中途被杀也不会重复发送。
+
+> ⚠️ **点赞接口必须带 `buvid3`（设备指纹 cookie）**，否则一律被风控拦下、返回 `-352`。
+> 你的 `.cookies.json` 里通常只有 `SESSDATA` 和 `bili_jct`，所以脚本会自己去
+> B 站公开的 `x/frontend/finger/spi` 取一个，缓存到 `.state/buvid3.txt` 并在后续
+> 进程中复用（每次换新的反而更像异常客户端）。取不到时只是不带这个 cookie，
+> 不会中断其他功能。
 
 > ⚠️ 本任务 `LogonType=Interactive`：**只在当前用户登录状态下运行**，注销后不再触发。
 
