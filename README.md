@@ -255,6 +255,7 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `.state/like_locks/` | 点赞进程锁（运行时生成，已 gitignore） |
 | `.state/likes/` | 点赞进度，按天存（运行时生成，已 gitignore） |
 | `.state/night_light/` | 下播点亮进度，按天存（运行时生成，已 gitignore） |
+| `.state/greetings/` | 开播问候记录，按天存，防止进程重启后重复问候（运行时生成，已 gitignore） |
 | `.state/buvid3.txt` | 设备指纹 cookie，自动获取并复用（运行时生成，已 gitignore） |
 | `logs/` | 运行日志（已 gitignore） |
 
@@ -299,6 +300,26 @@ python3 scripts/videos.py --days 7 --coin --fav
 > 所以「点满 500 次」的意思是发够了这么多次请求，不等于服务端全部计入；
 > 触到上限或风控时接口会返回非 0，脚本据此停止。
 
+### 每个行为怎么开 / 怎么关
+
+| 行为 | 开关 | 具体参数 |
+|------|------|----------|
+| 开播分享 | ✅ `share.on_live` | `true` / `false` |
+| 下播点亮时分享 | ✅ `share.after_offline` | `true` / `false` |
+| 开播问候弹幕 | ❌ **关不掉** | `danmaku.on_live` 必须是非空数组，只能改内容 |
+| 开播点赞（E2） | ❌ **关不掉** | `like.target` 必须是正整数，`batch` / `interval` 可调 |
+| 下播点亮弹幕（E3） | ❌ **关不掉** | `danmaku.after_offline` 必须是非空数组，只能改内容 |
+| 挂机心跳（E1） | ❌ **关不掉** | 无参数 |
+| 整个计划任务 | ✅ `python asoul_ctl.py stop` | 禁用任务 + 终止后台进程 |
+
+**只有 `share` 两段能单独关闭，其余行为都关不掉**——这是当前配置格式的一个缺口：
+`danmaku.on_live` / `danmaku.after_offline` 被校验为"非空数组"，`like.target` 被校验为
+"正整数"，所以填 `[]` 或 `0` 会直接 `ConfigError` 退出，而不是安静地不做事。
+想只停某一个行为，目前只能改代码，或者用 `asoul_ctl.py stop` 把整条链路都停掉。
+
+要补的话，最直接的做法是给三段各加一个 `enabled` 布尔（`danmaku.enabled` /
+`like.enabled` / `night_light.enabled`，缺省 `true`），并在调度器侧跳过。**尚未实现。**
+
 ### 开关与状态
 
 ```bash
@@ -314,14 +335,22 @@ python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 计划任务 `ASOUL_Heartbeat_Manage` 每 5 分钟执行一次 `run_manage.bat` → `pythonw.exe manage_asoul_heartbeat.py`。
 管理脚本本身**不会常驻**，它只负责按事件拉起 / 放下别的进程：
 
-1. 通过 `scripts/asoul_members.py` 读取 `.asoul_config.json`，判断当前是否在活跃时段；
-2. **时段外（睡眠）**：终止仍在跑的挂机与点赞进程，然后跑一次 `night_light.py`；
-3. **时段内**：调 `heartbeat.py --check-only --json` 查谁在播；
-4. 对每个**在播**成员，各拉起两个独立进程，PID 写进锁文件、输出重定向到日志：
-   - `heartbeat.py --until-offline --members <成员>` → `.state/locks/<房间号>.lock`，`logs/heartbeat_<成员>_<时间戳>.log`
-   - `like_room.py --members <成员>` → `.state/like_locks/<房间号>.lock`，`logs/like_<成员>_<时间戳>.log`
-5. 对**没在播**的成员，把两个进程都杀掉并删锁；
-6. 这些后台进程**独立于计划任务存活**：挂机到下播为止，点赞点满为止（点满后 `manage` 看进度就知道不用再拉，不会每 5 分钟白起一次进程）。
+1. 检查 `.cookies.json` 在不在，不在就直接退出（不猜、不静默跳过登录）；
+2. 通过 `scripts/asoul_members.py` 读取并校验 `.asoul_config.json`，判断当前是否在活跃时段；
+3. **时段外（睡眠）**：
+   - 终止仍在跑的挂机与点赞进程（按锁文件全扫，不按成员列表——成员被删掉后遗留的进程也能收掉）；
+   - 跑一次 `night_light.py`。它先查一次「今晚是不是所有房间都已有结论」，是就直接返回，
+     连直播状态接口都不打（一整夜省下上百次请求）；否则只对**没在播**的房间出手。
+4. **时段内**：
+   - 先清理**已不在配置里**的孤儿进程（成员被删 / 房间号被改）；
+   - 调 `heartbeat.py --check-only --json` 查谁在播；
+   - 对每个**在播**成员各拉起两个独立进程，PID 写进锁文件、输出重定向到日志：
+     - `heartbeat.py --until-offline --members <成员>` → `.state/locks/<房间号>.lock`，`logs/heartbeat_<成员>_<时间戳>.log`
+     - `like_room.py --members <成员>` → `.state/like_locks/<房间号>.lock`，`logs/like_<成员>_<时间戳>.log`
+       拉起前先看 `.state/likes/` 的进度，**今晚已点满就根本不启动这个进程**（否则每 5 分钟白起一个、白打一次直播状态接口）；
+   - 对**没在播**的成员，把两个进程都杀掉并删锁。
+
+5. 这些后台进程**独立于计划任务存活**：挂机到下播为止，点赞点满为止。所以「每 5 分钟」只是**巡检频率**，不是执行间隔——真正干活的进程一直活着，`manage` 每一轮只做「该起的起、该停的停」。
 
 锁文件用于防止重复启动；`MultipleInstancesPolicy=IgnoreNew` 防止计划任务自身叠加。
 
@@ -329,17 +358,28 @@ python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 
 | 事件 | 触发时机 | 动作 |
 |------|----------|------|
-| **开播问候** | `heartbeat.py` 确认开播时 | 分享直播间（`share.on_live`）+ 发一条 `danmaku.on_live` |
+| **开播问候** | `heartbeat.py` 确认开播时 | 分享直播间（`share.on_live`）+ 发一条 `danmaku.on_live`；**每晚每房间只发一次** |
 | **开播点赞** | 由 `manage` 拉起 `like_room.py` | 随机间隔点赞，点满 `like.target` 即停；接口返回非 0（触顶 / 风控）也立即停 |
 | **下播点亮** | 活跃时段结束后，房间**没在播**时 | 分享直播间（`share.after_offline`）+ 按序发 `danmaku.after_offline`，随机间隔；**每晚只发一次** |
 
 下播点亮由睡眠时段的每 5 分钟轮询实现，也就是「一直等，下播就发」：房间还开着就跳过，等它下播。进度按天存在 `.state/night_light/<房间号>.json`，中途被杀也不会重复发送。
+
+开播问候同样按天记在 `.state/greetings/<房间号>.json`。挂机进程崩了会被 `manage` 重新拉起，而那时主播往往**还在播**——没有这个记录，问候弹幕就会跟着每次重启重复发出去。分享单独记一份，所以"分享成功但弹幕失败"时，下次只补弹幕、不重复分享。发送失败会记一次尝试，连续 3 次当晚放弃（失败该重试，比如撞上限流；但不能变成整晚每 5 分钟发一次）。
 
 > ⚠️ **点赞接口必须带 `buvid3`（设备指纹 cookie）**，否则一律被风控拦下、返回 `-352`。
 > 你的 `.cookies.json` 里通常只有 `SESSDATA` 和 `bili_jct`，所以脚本会自己去
 > B 站公开的 `x/frontend/finger/spi` 取一个，缓存到 `.state/buvid3.txt` 并在后续
 > 进程中复用（每次换新的反而更像异常客户端）。取不到时只是不带这个 cookie，
 > 不会中断其他功能。
+
+> ⚠️ **弹幕有发送频率限制，实测阈值在 1~3 秒之间**：连发间隔 3 秒可以，间隔 1 秒就返回
+> `10030 您发送弹幕的频率过快`。默认配置的 `danmaku.interval.min: 3` 正好卡在边界上、
+> **没有余量**，觉得不稳就把 min 调到 4。
+>
+> 更要紧的是：**被限流时返回体里照样有 `send_from_me: true` 和弹幕内容**，光看 body
+> 会以为发成功了。判成功只能看 `code == 0`，脚本就是这么做的。
+>
+> 另外实测**未开播的直播间也能发弹幕、也能分享**，所以下播点亮（E3）在离线房间能正常工作。
 
 > ⚠️ 本任务 `LogonType=Interactive`：**只在当前用户登录状态下运行**，注销后不再触发。
 

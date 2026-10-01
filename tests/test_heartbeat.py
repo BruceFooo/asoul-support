@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -101,6 +102,124 @@ class PidAliveTests(unittest.TestCase):
         lock_dir = str(heartbeat._LOCK_DIR).replace("\\", "/")
         self.assertNotIn("/tmp/", lock_dir)
         self.assertIn(".state/locks", lock_dir)
+
+
+class FakeClient:
+    """顶掉真实网络调用，只记录发出去的动作。"""
+
+    def __init__(self, share_resp=None, danmaku_resp=None):
+        self.share_resp = share_resp if share_resp is not None else {"code": 0}
+        self.danmaku_resp = danmaku_resp if danmaku_resp is not None else {"code": 0}
+        self.share_calls = []
+        self.danmaku_calls = []
+
+    def share(self, room):
+        self.share_calls.append(room)
+        return self.share_resp
+
+    def send_danmaku(self, room, msg):
+        self.danmaku_calls.append({"room": room, "msg": msg})
+        return self.danmaku_resp
+
+
+SETTINGS = {
+    "danmaku": {"on_live": ["晚好"], "after_offline": ["1"],
+                "interval": {"min": 3, "max": 12}},
+    "share": {"on_live": True, "after_offline": True},
+}
+
+TODAY = "2026-10-01"
+ROOM = 281
+
+
+class GreetingTests(unittest.TestCase):
+    """开播问候每晚每房间只发一次——挂机进程崩了重启不能重复问候。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(heartbeat, "_GREETING_DIR", Path(self.tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        settings = patch.object(heartbeat, "SETTINGS", json.loads(json.dumps(SETTINGS)))
+        settings.start()
+        self.addCleanup(settings.stop)
+        self.client = FakeClient()
+        client_patcher = patch.object(heartbeat, "LiveClient", return_value=self.client)
+        client_patcher.start()
+        self.addCleanup(client_patcher.stop)
+
+    def greet(self, today=TODAY):
+        return heartbeat.open_live_greeting(ROOM, "sessdata", "csrf", today=today)
+
+    def test_first_call_shares_and_sends_danmaku(self):
+        self.assertTrue(self.greet())
+        self.assertEqual(self.client.share_calls, [ROOM])
+        self.assertEqual([c["msg"] for c in self.client.danmaku_calls], ["晚好"])
+
+    def test_restart_same_night_does_not_greet_again(self):
+        self.greet()
+        self.assertTrue(self.greet())  # 模拟进程重启后又调一次
+        self.assertEqual(self.client.share_calls, [ROOM])
+        self.assertEqual(len(self.client.danmaku_calls), 1)
+
+    def test_next_day_greets_again(self):
+        self.greet()
+        self.assertTrue(self.greet(today="2026-10-02"))
+        self.assertEqual(len(self.client.danmaku_calls), 2)
+
+    def test_each_room_has_its_own_state(self):
+        self.greet()
+        self.assertTrue(heartbeat.open_live_greeting(999, "sessdata", "csrf", today=TODAY))
+        self.assertEqual(len(self.client.danmaku_calls), 2)
+
+    def test_share_failure_does_not_block_danmaku(self):
+        self.client.share_resp = {"code": -400, "message": "boom"}
+        self.assertTrue(self.greet())
+        self.assertEqual(len(self.client.danmaku_calls), 1)
+
+    def test_share_retried_when_danmaku_failed(self):
+        self.client.danmaku_resp = {"code": 10030, "message": "频率过快"}
+        self.assertFalse(self.greet())
+        self.assertEqual(len(self.client.danmaku_calls), 1)
+
+        self.client.danmaku_resp = {"code": 0}
+        self.assertTrue(self.greet())  # 补发弹幕
+        self.assertEqual(self.client.share_calls, [ROOM])  # 分享不重复
+        self.assertEqual(len(self.client.danmaku_calls), 2)
+
+    def test_gives_up_after_max_attempts(self):
+        self.client.danmaku_resp = {"code": 10030, "message": "频率过快"}
+        for _ in range(heartbeat.MAX_GREETING_ATTEMPTS):
+            self.assertFalse(self.greet())
+        attempts = len(self.client.danmaku_calls)
+
+        self.assertFalse(self.greet())  # 第 N+1 次直接放弃，不再请求
+        self.assertEqual(len(self.client.danmaku_calls), attempts)
+
+    def test_share_disabled_by_config(self):
+        heartbeat.SETTINGS["share"] = {"on_live": False, "after_offline": True}
+        self.assertTrue(self.greet())
+        self.assertEqual(self.client.share_calls, [])
+        self.assertEqual(len(self.client.danmaku_calls), 1)
+
+    def test_falls_back_to_default_when_on_live_missing(self):
+        heartbeat.SETTINGS["danmaku"] = {}
+        self.assertTrue(self.greet())
+        self.assertEqual([c["msg"] for c in self.client.danmaku_calls], ["晚好"])
+
+    def test_corrupt_state_is_treated_as_fresh(self):
+        path = Path(self.tmp.name) / f"{ROOM}.json"
+        path.write_text("{{{ not json", encoding="utf-8")
+        self.assertTrue(self.greet())
+        self.assertEqual(len(self.client.danmaku_calls), 1)
+
+    def test_state_survives_minor_vandalism(self):
+        path = Path(self.tmp.name) / f"{ROOM}.json"
+        path.write_text(json.dumps({"date": TODAY, "attempts": "many"}),
+                        encoding="utf-8")
+        self.assertTrue(self.greet())
+        self.assertEqual(len(self.client.danmaku_calls), 1)
 
 
 if __name__ == "__main__":

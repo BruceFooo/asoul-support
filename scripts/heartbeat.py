@@ -24,6 +24,7 @@ from typing import Optional, Dict, List
 from check_auth import check_login
 from asoul_members import ConfigError, load_members, load_settings
 from live_api import LiveClient
+from local_time import local_date
 
 _DISCORD_TARGET = "user:1479415368249507881"
 
@@ -44,7 +45,11 @@ def _notify(msg: str):
 
 _STATE_DIR = Path(__file__).resolve().parent.parent / ".state"
 _LOCK_DIR = _STATE_DIR / "locks"
+_GREETING_DIR = _STATE_DIR / "greetings"
 _LOG_FILE = Path.home() / ".openclaw" / "logs" / "asoul_activity.jsonl"
+
+# 同一晚最多尝试几次开播问候。超了就放弃，等下一天。
+MAX_GREETING_ATTEMPTS = 3
 
 
 def _pid_alive(pid: int) -> bool:
@@ -152,22 +157,75 @@ def _post_json(url: str, data: dict, timeout: int = 10) -> Optional[dict]:
         return None
 
 
-def open_live_greeting(room_id: int, sessdata: str, bili_jct: str) -> bool:
+def _greeting_path(room_id: int) -> Path:
+    return _GREETING_DIR / f"{room_id}.json"
+
+
+def load_greeting_state(room_id: int, today: str) -> Dict:
+    """读今晚的开播问候进度。跨天 / 文件损坏 / 内容非法一律当作全新一晚。"""
+    path = _greeting_path(room_id)
+    if not path.exists():
+        return {"date": today, "shared": False, "greeted": False, "attempts": 0}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"date": today, "shared": False, "greeted": False, "attempts": 0}
+    if not isinstance(data, dict) or data.get("date") != today:
+        return {"date": today, "shared": False, "greeted": False, "attempts": 0}
+
+    attempts = data.get("attempts")
+    return {
+        "date": today,
+        "shared": data.get("shared") is True,
+        "greeted": data.get("greeted") is True,
+        "attempts": attempts if isinstance(attempts, int) and not isinstance(attempts, bool)
+        and attempts >= 0 else 0,
+    }
+
+
+def save_greeting_state(room_id: int, state: Dict) -> None:
+    path = _greeting_path(room_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def open_live_greeting(room_id: int, sessdata: str, bili_jct: str,
+                       today: Optional[str] = None) -> bool:
     """开播动作：分享直播间 + 发一条问候弹幕。
 
     内容与开关都来自配置的 settings 段（`danmaku.on_live` / `share.on_live`）。
     `on_live` 是数组，这里随机取一条，方便配置多个说法换着发。
     两个动作都是尽力而为：失败只打日志，不影响后续挂机。
+
+    **每晚每房间只问候一次**，状态记在 `.state/greetings/<room>.json`。
+    挂机进程崩了会被 manage 重新拉起，而那时主播往往还在播——没有这个记录，
+    问候弹幕就会跟着进程重启一条条重复发出去。分享也单独记，分享成功但弹幕
+    失败时，下次只补弹幕，不重复分享。
+
+    发送失败会记一次尝试，连续 MAX_GREETING_ATTEMPTS 次当晚放弃：失败重试是
+    对的（比如撞上限流），但不能变成整晚每 5 分钟发一次。
     """
+    today = today or local_date()
+    state = load_greeting_state(room_id, today)
+
+    if state["greeted"]:
+        print("    ⏭  今晚已问候过，跳过", file=sys.stderr)
+        return True
+    if state["attempts"] >= MAX_GREETING_ATTEMPTS:
+        print(f"    ⏭  今晚问候已失败 {state['attempts']} 次，跳过", file=sys.stderr)
+        return False
+
     danmaku = SETTINGS.get("danmaku") or {}
     messages = danmaku.get("on_live") or ["晚好"]
     share_on = (SETTINGS.get("share") or {}).get("on_live", True)
 
     client = LiveClient(sessdata, bili_jct)
 
-    if share_on:
+    if share_on and not state["shared"]:
         resp = client.share(room_id)
         if resp.get("code") == 0:
+            state["shared"] = True
+            save_greeting_state(room_id, state)
             print("    🔗 已分享直播间", file=sys.stderr)
         else:
             print(f"    ⚠️  分享失败：{resp.get('code')} {resp.get('message')}", file=sys.stderr)
@@ -175,8 +233,13 @@ def open_live_greeting(room_id: int, sessdata: str, bili_jct: str) -> bool:
     msg = random.choice(messages)
     resp = client.send_danmaku(room_id, msg)
     if resp.get("code") != 0:
+        state["attempts"] += 1
+        save_greeting_state(room_id, state)
         print(f"    ⚠️  弹幕发送失败：{resp.get('code')} {resp.get('message')}", file=sys.stderr)
         return False
+
+    state["greeted"] = True
+    save_greeting_state(room_id, state)
     print(f"    💬 已发送弹幕：{msg}", file=sys.stderr)
     return True
 
