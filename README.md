@@ -55,6 +55,7 @@
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| **v4.4** | 2026-10-02 | `logs/manage.log` 每行加秒级时间戳（新增 `scripts/log_stamp.py`，`local_time` 增加 `local_stamp()`） |
 | **v4.3** | 2026-10-01 | Discord 通知收进配置：新增 `notify.enabled`，**缺省关闭**（原先硬编码一直发） |
 | **v4.2** | 2026-10-01 | 按事件重构调度：开播问候（分享 + 1 条弹幕）、开播点赞（点满停）、下播点亮（分享 + 10 条弹幕，每晚一次）；弹幕/点赞/分享全部可在配置里调 |
 | **v4.1.1** | 2026-07-27 | 修复 X25Kn 心跳时间漂移和失败链恢复；新增亲密度增量记录与登录预检；GitHub Actions 升级到 Node 24 运行时 |
@@ -253,6 +254,7 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `scripts/wbi.py` | 点赞接口要用的 WBI 签名 |
 | `scripts/like_room.py` | 点赞进程：点满即停 |
 | `scripts/night_light.py` | 下播点亮：分享 + 连发弹幕，每晚一次 |
+| `scripts/log_stamp.py` | 给日志逐行加 `[YYYY-MM-DD HH:MM:SS]` 前缀，由入口脚本在 `__main__` 里安装 |
 | `run_manage.bat` | 无窗口运行器，由计划任务每 5 分钟调用 |
 | `asoul_ctl.py` | 开关 / 状态控制台 |
 | `.state/locks/` | 挂机进程锁（运行时生成，已 gitignore） |
@@ -261,7 +263,7 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `.state/night_light/` | 下播点亮进度，按天存（运行时生成，已 gitignore） |
 | `.state/greetings/` | 开播问候记录，按天存，防止进程重启后重复问候（运行时生成，已 gitignore） |
 | `.state/buvid3.txt` | 设备指纹 cookie，自动获取并复用（运行时生成，已 gitignore） |
-| `logs/` | 运行日志（已 gitignore） |
+| `logs/` | 运行日志（已 gitignore）。`manage.log` 由计划任务的追加重定向而来，**每行都带秒级时间戳** |
 
 ### 配置示例
 
@@ -319,6 +321,12 @@ python3 scripts/videos.py --days 7 --coin --fav
 
 所有开关的状态每轮巡检都会写进日志（`配置中已关闭：弹幕、点赞`），
 所以"开了没反应"时先看日志，不用怀疑程序坏了。
+
+`logs/manage.log` 的每一行都带 `[2026-10-02 22:58:25]` 这样的秒级时间戳，
+时间取 `local_time`（Windows 上走 `GetLocalTime`，不受 Git Bash 的 TZ=UTC 影响）。
+时间戳由各入口脚本自己在 `__main__` 里装（`scripts/log_stamp.py`）——
+子进程继承的是文件描述符，不经过父进程的 Python 层包装，所以
+`night_light.py` 被 manage 调起时也会给自己装一遍。
 
 > ⚠️ 弹幕有频率限制，实测阈值在 1~3 秒之间：间隔 3 秒能过、1 秒就返回
 > `10030 频率过快`。默认 `min: 3` 没有余量，觉得不稳就调到 4。

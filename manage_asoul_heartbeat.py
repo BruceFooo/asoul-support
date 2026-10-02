@@ -20,6 +20,7 @@ os.chdir(asoul_support_dir)
 
 # 共享配置模块在 scripts/ 下（与 check_auth.py 同级），项目根不在默认搜索路径里
 sys.path.insert(0, str(asoul_support_dir / "scripts"))
+import log_stamp  # noqa: E402
 from asoul_members import ConfigError, load_config, load_members  # noqa: E402
 from local_time import in_active_window, local_hour  # noqa: E402
 import like_room  # noqa: E402
@@ -334,4 +335,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 计划任务把输出直接追加进 logs/manage.log，每行都带上秒级时间戳
+    log_stamp.install()
     raise SystemExit(main())

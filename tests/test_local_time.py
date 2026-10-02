@@ -57,6 +57,25 @@ class LocalDateTests(unittest.TestCase):
         self.assertEqual(local_time.local_date(), local_time.local_date())
 
 
+class LocalStampTests(unittest.TestCase):
+    """日志时间戳同样不能用 time.localtime()，否则 TZ=UTC 的 shell 里会差 8 小时。"""
+
+    def test_format_is_iso_like_to_the_second(self):
+        self.assertRegex(local_time.local_stamp(),
+                         r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+    @unittest.skipUnless(os.name == "nt", "Windows-only")
+    def test_does_not_use_time_localtime(self):
+        with patch.object(local_time.time, "localtime",
+                          side_effect=AssertionError("不应依赖 time.localtime()")):
+            stamp = local_time.local_stamp()
+        self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+    @unittest.skipUnless(os.name == "nt", "Windows-only")
+    def test_starts_with_local_date(self):
+        self.assertTrue(local_time.local_stamp().startswith(local_time.local_date()))
+
+
 class ActiveWindowTests(unittest.TestCase):
     def test_normal_window(self):
         self.assertTrue(local_time.in_active_window(9, 8, 18))

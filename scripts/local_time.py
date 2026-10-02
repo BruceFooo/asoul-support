@@ -14,8 +14,8 @@ import time
 from typing import Tuple
 
 
-def _windows_now() -> Tuple[int, int, int, int]:
-    """返回 (年, 月, 日, 小时)，取 Windows 系统本地时间。"""
+def _windows_now() -> Tuple[int, int, int, int, int, int]:
+    """返回 (年, 月, 日, 时, 分, 秒)，取 Windows 系统本地时间。"""
     import ctypes
 
     class SYSTEMTIME(ctypes.Structure):
@@ -28,7 +28,8 @@ def _windows_now() -> Tuple[int, int, int, int]:
 
     now = SYSTEMTIME()
     ctypes.windll.kernel32.GetLocalTime(ctypes.byref(now))
-    return now.wYear, now.wMonth, now.wDay, now.wHour
+    return (now.wYear, now.wMonth, now.wDay,
+            now.wHour, now.wMinute, now.wSecond)
 
 
 def local_hour() -> int:
@@ -41,11 +42,23 @@ def local_hour() -> int:
 def local_date() -> str:
     """当前本地日期，`YYYY-MM-DD`。用于「每晚一次」的防重比较。"""
     if os.name == "nt":
-        year, month, day, _ = _windows_now()
+        year, month, day = _windows_now()[:3]
     else:
         now = time.localtime()
         year, month, day = now.tm_year, now.tm_mon, now.tm_mday
     return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def local_stamp() -> str:
+    """当前本地时间，`YYYY-MM-DD HH:MM:SS`。用于给日志逐行打时间戳。"""
+    if os.name == "nt":
+        year, month, day, hour, minute, second = _windows_now()
+    else:
+        now = time.localtime()
+        year, month, day = now.tm_year, now.tm_mon, now.tm_mday
+        hour, minute, second = now.tm_hour, now.tm_min, now.tm_sec
+    return (f"{year:04d}-{month:02d}-{day:02d} "
+            f"{hour:02d}:{minute:02d}:{second:02d}")
 
 
 def in_active_window(now_hour: int, start: int, end: int) -> bool:

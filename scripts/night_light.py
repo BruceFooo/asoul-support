@@ -29,6 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import log_stamp  # noqa: E402
 from asoul_members import ConfigError, load_config, load_members  # noqa: E402
 from live_api import LiveClient, load_cookies  # noqa: E402
 from local_time import in_active_window, local_date, local_hour  # noqa: E402
@@ -242,4 +243,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 由 manage 每 5 分钟调起，输出继承它的 fd 直接落进 logs/manage.log：
+    # 父进程的时间戳包装管不到子进程，这里得自己装一遍
+    log_stamp.install()
     raise SystemExit(main())
