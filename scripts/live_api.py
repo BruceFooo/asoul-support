@@ -8,6 +8,8 @@
 """
 
 import json
+import random
+import string
 import time
 import urllib.error
 import urllib.parse
@@ -33,9 +35,14 @@ MEDAL_WEAR_URL = "https://api.live.bilibili.com/xlive/web-room/v1/fansMedal/wear
 
 # 点赞：前端把若干次点击汇总后一次性上报，click_time 就是汇总的次数
 LIKE_URL = "https://api.live.bilibili.com/xlive/app-ucenter/v1/like_info_v3/like/likeReportV3"
-# 分享：interact_type=3 即「分享直播间」
+# 分享直播间：网页端点分享时登记分享的那个接口（主站接口，房间参数见 share()）
+SHARE_ADD_URL = "https://api.bilibili.com/x/web-interface/share/add"
+# 分享直播间时的互动上报：interact_type=3 即「分享」。返回体是 allow_mock（能不能
+# 播放模拟互动特效），并不代表分享结果，所以它决定不了成败，见 share()。
 INTERACT_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/TrigerInteract"
 SHARE_INTERACT_TYPE = 3
+# share/add 的「今天已经分享过」。对调用方来说目标已达成，按成功处理。
+SHARE_ALREADY_DONE = 71000
 
 _COOKIE_PATHS = [
     Path(__file__).resolve().parent.parent / ".cookies.json",
@@ -57,6 +64,11 @@ def _save_buvid(value: str) -> None:
         _BUVID_CACHE.write_text(value, encoding="utf-8")
     except OSError:
         pass
+
+
+def _visit_id() -> str:
+    """一次性的访问标识。网页端每次分享都带一个（形如 `caxa5nscgpc0`）。"""
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
 
 
 def load_cookies() -> Optional[Dict[str, str]]:
@@ -102,6 +114,7 @@ class LiveClient:
         self._bili_jct = bili_jct
         self._uid: Optional[int] = None
         self._rooms: Dict[int, int] = {}
+        self._room_info: Dict[int, Dict] = {}
         self._buvid3 = buvid3
         self._buvid_done = buvid3 is not None
         self._signer = WbiSigner(self._nav_keys)
@@ -157,23 +170,29 @@ class LiveClient:
                 raise WbiError("nav 返回里没有 mid")
         return self._uid
 
+    def room_info(self, room: int) -> Dict:
+        """短号对应的 get_info 原始 data，进程内缓存（分享要用的分区信息在里面）。
+
+        解析失败返回空 dict 而不是抛异常：房间元数据只是锦上添花，拿不到就退回
+        原样，绝不因为解析不出来而破坏既有链路。
+        """
+        if room not in self._room_info:
+            resp = _http("GET", f"{ROOM_INFO_URL}?room_id={room}", self.headers(room))
+            data = resp.get("data") if resp.get("code") == 0 else None
+            self._room_info[room] = data if isinstance(data, dict) else {}
+        return self._room_info[room]
+
     def real_room_id(self, room: int) -> int:
         """把短号（如 281）换成真实房间号（如 49728）。
 
         点赞等接口用的是真实房间号；配置里通常会写浏览器地址栏那个短号。
         解析失败时**原样返回**，绝不因为解析不出来而破坏既有链路。
         """
-        if room in self._rooms:
-            return self._rooms[room]
-
-        real = room
-        resp = _http("GET", f"{ROOM_INFO_URL}?room_id={room}", self.headers(room))
-        if resp.get("code") == 0:
-            candidate = (resp.get("data") or {}).get("room_id")
-            if isinstance(candidate, int) and candidate > 0:
-                real = candidate
-        self._rooms[room] = real
-        return real
+        if room not in self._rooms:
+            candidate = self.room_info(room).get("room_id")
+            self._rooms[room] = (candidate if isinstance(candidate, int) and candidate > 0
+                                 else room)
+        return self._rooms[room]
 
     # ── 查询 ──────────────────────────────────────────────
 
@@ -269,15 +288,43 @@ class LiveClient:
         return _http("POST", url, self.headers(real))
 
     def share(self, room: int) -> Dict:
-        """分享直播间（interact_type=3）。"""
+        """分享直播间。返回 **登记分享** 的那个响应。
+
+        网页端抓包显示点分享会发两个请求，职责完全不同：
+
+        1. `x/web-interface/share/add`——真正登记分享。`area_id` / `parent_area_id`
+           来自 get_info，`up_id` 是主播 uid。返回 0 表示登记成功，71000
+           「重复分享」表示今天已经登记过，同样算达成目标（否则每晚重试到放弃）。
+        2. `TrigerInteract(interact_type=3)`——互动上报，返回体是 `allow_mock`
+           （能不能播放模拟互动特效），**跟分享有没有生效无关**。
+
+        早先的版本只发了第 2 个、把 `code == 0` 当成分享成功，于是 B 站端
+        一直没有任何分享记录。这里的成败一律以第 1 个为准，第 2 个照发但失败不影响。
+        """
+        info = self.room_info(room)
         real = self.real_room_id(room)
-        return _http("POST", INTERACT_URL, self.headers(real), data={
+
+        resp = _http("POST", SHARE_ADD_URL, self.headers(real), data={
+            "area_id": info.get("area_id", ""),
+            "parent_area_id": info.get("parent_area_id", ""),
+            "room_id": real,
+            "up_id": info.get("uid", ""),
+            "csrf": self._bili_jct,
+            "csrf_token": self._bili_jct,
+            "visit_id": _visit_id(),
+        })
+        if resp.get("code") == SHARE_ALREADY_DONE:
+            # 今天已经分享过，对调用方来说目标已达成
+            resp = {**resp, "code": 0, "message": "重复分享（今日已登记）"}
+
+        _http("POST", INTERACT_URL, self.headers(real), data={
             "roomid": real,
             "interact_type": SHARE_INTERACT_TYPE,
             "csrf_token": self._bili_jct,
             "csrf": self._bili_jct,
             "visit_id": "",
         })
+        return resp
 
     def wear_medal(self, medal_id: int) -> bool:
         resp = _http("POST", MEDAL_WEAR_URL, self.headers(), data={

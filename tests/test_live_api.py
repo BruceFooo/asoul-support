@@ -49,7 +49,8 @@ def _router(**overrides):
         if live_api.NAV_URL in url:
             return _fresh(NAV_OK)
         if live_api.ROOM_INFO_URL in url:
-            return {"code": 0, "data": {"room_id": 49728, "short_id": 281}}
+            return {"code": 0, "data": {"room_id": 49728, "short_id": 281,
+                                        "area_id": 190, "parent_area_id": 5, "uid": 699438}}
         return {"code": 0}
 
     return fake_http, calls
@@ -328,6 +329,68 @@ class LikeTests(unittest.TestCase):
 
 
 class ShareTests(unittest.TestCase):
+    """分享直播间。
+
+    网页端抓包（2026-10-02）显示分享会发两个请求：`x/web-interface/share/add`
+    负责登记分享，`TrigerInteract(interact_type=3)` 只是互动上报（返回体是
+    `allow_mock`）。只有前者能决定分享有没有生效——早先版本只发了后者，
+    于是 B 站端一直没有任何分享记录。
+    """
+
+    # 抓包里的登记参数。area_id / parent_area_id 与 get_info 里的一致
+    CAPTURE = {"area_id": "190", "parent_area_id": "5",
+               "room_id": "49728", "up_id": "699438"}
+
+    def _call(self, room=281, **overrides):
+        """返回 (响应, 登记分享那次请求的上线参数, 全部调用)。
+
+        参数按 urlencode 之后的形式取，和抓包里看到的一致。
+        """
+        client = _client()
+        fake, calls = _router(**overrides)
+        with patch.object(live_api, "_http", fake):
+            resp = client.share(room)
+        added = _calls_to(calls, live_api.SHARE_ADD_URL)
+        params = dict(urllib.parse.parse_qsl(urllib.parse.urlencode(added[0]["data"])))
+        return resp, params, calls
+
+    def test_registers_via_web_interface_share_add(self):
+        _, params, calls = self._call()
+        self.assertEqual(len(_calls_to(calls, live_api.SHARE_ADD_URL)), 1)
+        self.assertEqual(_calls_to(calls, live_api.SHARE_ADD_URL)[0]["method"], "POST")
+        for key, expected in self.CAPTURE.items():
+            self.assertEqual(params[key], expected, f"{key} 与抓包不一致")
+
+    def test_share_add_carries_csrf_and_visit_id(self):
+        _, params, _ = self._call()
+        self.assertEqual(params["csrf"], "JCT")
+        self.assertEqual(params["csrf_token"], "JCT")
+        self.assertTrue(params["visit_id"])
+
+    def test_share_add_uses_real_room_id(self):
+        """配置里写短号 281，登记分享要用真实房间号 49728。"""
+        _, params, _ = self._call(room=281)
+        self.assertEqual(params["room_id"], "49728")
+
+    def test_room_info_is_fetched_once(self):
+        """登记用的 area_id 与真实房间号来自同一次 get_info。"""
+        _, _, calls = self._call()
+        self.assertEqual(len(_calls_to(calls, live_api.ROOM_INFO_URL)), 1)
+
+    def test_duplicate_share_is_treated_as_success(self):
+        """71000「重复分享」= 今天已经登记过，目标已达成，别再重试到放弃。"""
+        resp, _, _ = self._call(**{live_api.SHARE_ADD_URL: {"code": 71000, "message": "重复分享"}})
+        self.assertEqual(resp["code"], 0)
+
+    def test_other_failure_codes_pass_through(self):
+        resp, _, _ = self._call(**{live_api.SHARE_ADD_URL: {"code": -400, "message": "请求错误"}})
+        self.assertEqual(resp["code"], -400)
+
+    def test_interact_failure_does_not_fail_the_share(self):
+        """互动上报只是 allow_mock 查询，它的成败不改变分享结论。"""
+        resp, _, _ = self._call(**{live_api.INTERACT_URL: {"code": -400, "message": "boom"}})
+        self.assertEqual(resp["code"], 0)
+
     def test_uses_trigger_interact_with_type_3(self):
         with patch.object(live_api, "_http", return_value={"code": 0}) as http:
             _client().share(49728)
