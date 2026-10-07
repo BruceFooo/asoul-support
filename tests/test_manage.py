@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,18 @@ sys.path.insert(0, str(ROOT))
 
 import manage_asoul_heartbeat as mgr  # noqa: E402
 import asoul_members  # noqa: E402  (mgr 已把 scripts/ 放进 sys.path)
+
+
+def assert_signalled(case: unittest.TestCase, run, kill) -> None:
+    """终止挂机进程走的是平台各自的路子：Windows 用 `taskkill`，类 Unix 用 `os.kill`。
+
+    只断言平台对应的那一条。要求两个都被调用会把测试绑死在 Windows 上，
+    而这个项目两边都在跑（服务器是 Linux + systemd）。
+    """
+    if os.name == "nt":
+        run.assert_called_once()
+    else:
+        kill.assert_called_once()
 
 
 class ActiveWindowTests(unittest.TestCase):
@@ -110,9 +123,10 @@ class StopMemberTests(unittest.TestCase):
             lock_dir = Path(d)
             (lock_dir / "22637261.lock").write_text("12345")
             with patch.object(mgr, "_pid_alive", return_value=True), \
-                 patch.object(mgr.subprocess, "run") as run:
+                 patch.object(mgr.subprocess, "run") as run, \
+                 patch.object(mgr.os, "kill") as kill:
                 stopped = mgr.stop_locked_members(lock_dir, "test")
-            run.assert_called_once()
+            assert_signalled(self, run, kill)
             self.assertEqual(stopped, 1)
             self.assertFalse((lock_dir / "22637261.lock").exists())
 
@@ -135,11 +149,12 @@ class StopMemberTests(unittest.TestCase):
             (lock_dir / "22637261.lock").write_text("111")  # 仍在配置里
             (lock_dir / "99999999.lock").write_text("222")  # 已从配置删除
             with patch.object(mgr, "_pid_alive", return_value=True), \
-                 patch.object(mgr.subprocess, "run") as run:
+                 patch.object(mgr.subprocess, "run") as run, \
+                 patch.object(mgr.os, "kill") as kill:
                 stopped = mgr.stop_locked_members(lock_dir, "已不在配置中",
                                                   keep_rooms={"22637261"})
             self.assertEqual(stopped, 1)
-            run.assert_called_once()
+            assert_signalled(self, run, kill)
             self.assertEqual([p.name for p in lock_dir.glob("*.lock")], ["22637261.lock"])
 
     def test_keep_rooms_none_kills_everything(self):
