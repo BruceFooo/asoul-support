@@ -2,7 +2,7 @@
   "members": [
     { "name": "枯水", "uid": 699438, "room": 281 }
   ],
-  "active_hours": { "start": 19, "end": 4 },
+  "active_hours": { "start": 21, "end": 3 },
   "danmaku": {
     "enabled": true,
     "on_live": ["晚好"],
@@ -16,6 +16,6 @@
     "interval": { "min": 1.0, "max": 3.0 }
   },
   "share": { "on_live": true, "after_offline": true },
-  "night_light": { "enabled": true, "after_hour": 1 },
+  "night_light": { "enabled": true, "after_hour": 3 },
   "notify": { "enabled": false }
 }
