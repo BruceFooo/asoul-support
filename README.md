@@ -257,8 +257,9 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `scripts/night_light.py` | 下播点亮：分享 + 连发弹幕，每晚一次 |
 | `scripts/log_stamp.py` | 给日志逐行加 `[YYYY-MM-DD HH:MM:SS]` 前缀并把输出切成行缓冲，由入口脚本在 `__main__` 里安装 |
 | `scripts/log_rotate.py` | 日志归档：隔天的 `.log` 压成 `.gz`（copytruncate），只保留最近 30 天 |
-| `run_manage.bat` | 无窗口运行器，由计划任务每 5 分钟调用 |
-| `asoul_ctl.py` | 开关 / 状态控制台 |
+| `run_manage.bat` | 无窗口运行器，由计划任务每 5 分钟调用（Windows） |
+| `asoul_ctl.py` | 开关 / 状态控制台（Windows，底层是 `schtasks`） |
+| `deploy/` | Linux 部署：systemd 单元 + `install.sh`，见 `deploy/README.md` |
 | `.state/locks/` | 挂机进程锁（运行时生成，已 gitignore） |
 | `.state/like_locks/` | 点赞进程锁（运行时生成，已 gitignore） |
 | `.state/likes/` | 点赞进度，按天存（运行时生成，已 gitignore） |
@@ -355,6 +356,22 @@ python asoul_ctl.py stop     # 关闭：禁用任务 + 终止正在跑的后台�
 python asoul_ctl.py run      # 只立即检测一次，不改开关
 python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 ```
+
+### Linux（systemd）
+
+Linux 上用 `deploy/` 里的 systemd 单元跑同样的 5 分钟巡检，`asoul_ctl.py` 不可用
+（它调的是 Windows 的 `schtasks`）：
+
+```bash
+sudo bash deploy/install.sh /projects/bilibili_helper
+
+systemctl start asoul-heartbeat.service        # 手动跑一轮
+systemctl disable --now asoul-heartbeat.timer  # 关闭
+tail -f /projects/bilibili_helper/logs/manage.log
+```
+
+细节与两个必须知道的坑（`KillMode=process`、`--json` 的 stdout 是数据通道）见
+**`deploy/README.md`**。
 
 ### 后台进程是怎么跑的
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=A-SOUL Support - 每 5 分钟巡检一次（对齐原 Windows 计划任务）
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=1s
+# 不追赶补跑：机器重启后不要一次性补发错过的巡检
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=A-SOUL Support - 开播检测 / 心跳挂机 / 点赞 / 下播点亮
+Documentation=file:///projects/bilibili_helper/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/projects/bilibili_helper
+ExecStart=/usr/bin/python3 /projects/bilibili_helper/manage_asoul_heartbeat.py
+StandardOutput=append:/projects/bilibili_helper/logs/manage.log
+StandardError=append:/projects/bilibili_helper/logs/manage.log
+# manage 用 Popen 起后台挂机/点赞子进程，并让它们活过 manage 自身退出。
+# 默认 KillMode=control-group 会在 oneshot 结束时把整个 cgroup 的子进程一起杀掉，
+# 那样心跳挂机刚起来就没了。必须只杀主进程。
+KillMode=process
+# 下播点亮是同步跑的：10 条弹幕 x 最长 12 秒 + 分享，留足时间
+TimeoutStartSec=240
