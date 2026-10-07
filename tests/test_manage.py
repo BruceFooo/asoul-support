@@ -228,10 +228,34 @@ class StartLockedTests(_LockFixture):
         lock = self.lock_dir / "281.lock"
         with patch.object(mgr.subprocess, "Popen") as popen:
             popen.return_value.pid = 777
-            pid = mgr.start_locked(["python", "x.py"], lock, "like_枯水")
+            pid = mgr.start_locked(["python", "x.py"], lock, "枯水")
         self.assertEqual(pid, 777)
         self.assertEqual(lock.read_text(), "777")
-        self.assertTrue(any(self.log_dir.glob("like_枯水_*.log")))
+        self.assertTrue((self.log_dir / "枯水.log").exists())
+
+    def test_second_start_appends_to_the_same_file(self):
+        """挂机与点赞共用 logs/<成员>.log：再启动是追加，不再按时间戳新建文件。"""
+        lock = self.lock_dir / "281.lock"
+        with patch.object(mgr.subprocess, "Popen") as popen:
+            popen.return_value.pid = 777
+            mgr.start_locked(["python", "heartbeat.py"], lock, "枯水")
+        log = self.log_dir / "枯水.log"
+        log.write_text("上一段运行留下的\n", encoding="utf-8")
+
+        with patch.object(mgr.subprocess, "Popen") as popen:
+            popen.return_value.pid = 778
+            mgr.start_locked(["python", "like_room.py"], lock, "枯水")
+
+        self.assertEqual(list(self.log_dir.glob("*.log")), [log])
+        self.assertEqual(log.read_text(encoding="utf-8"), "上一段运行留下的\n")
+
+    def test_member_name_cannot_escape_the_log_dir(self):
+        """成员名被直接当文件名用，路径分隔符必须挡掉，否则日志会写到 logs/ 外面。"""
+        self.assertEqual(mgr.member_log("../../etc/passwd").parent, self.log_dir)
+        self.assertNotIn("/", mgr.member_log("a/b").name)
+
+    def test_blank_member_name_still_gets_a_file(self):
+        self.assertEqual(mgr.member_log("   ").name, "unknown.log")
 
 
 class StartHeartbeatTests(_LockFixture):

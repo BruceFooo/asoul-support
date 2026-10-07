@@ -25,6 +25,7 @@ from check_auth import check_login
 from asoul_members import ConfigError, load_members, load_settings
 from live_api import LiveClient
 from local_time import local_date
+import log_stamp
 
 _DISCORD_TARGET = "user:1479415368249507881"
 
@@ -1005,5 +1006,18 @@ def main():
         print(format_output(live_results, offline_names, medals, targets))
 
 
+def stdout_is_a_data_channel(argv: List[str]) -> bool:
+    """`--json` 时 stdout 是给 manage 解析的数据，不是日志。
+
+    manage 靠 `heartbeat.py --check-only --json` 的 stdout 判断谁在播；一旦给它
+    加上 `[时间] ` 前缀，`json.loads` 当场失败、在播名单恒为空，
+    **挂机就再也不会被拉起来**——功能整个静默失效，表面还只像"没人开播"。
+    """
+    return "--json" in argv
+
+
 if __name__ == "__main__":
+    # 输出被 manage 追加进 logs/<成员>.log：父进程的时间戳包装管不到子进程，
+    # 这里自己装一遍，否则挂机那几行会是没有时间前缀的孤儿
+    log_stamp.install(stdout=not stdout_is_a_data_channel(sys.argv))
     main()

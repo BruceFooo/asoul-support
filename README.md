@@ -55,6 +55,7 @@
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| **v4.5** | 2026-10-07 | 日志收敛：一个成员一个 `logs/<成员>.log`，挂机与点赞合并写入、不再每次启动新建文件；`heartbeat` / `like_room` 补上时间戳与行缓冲；新增 `scripts/log_rotate.py`，跨零点归档、只保留最近 30 天 |
 | **v4.4** | 2026-10-02 | `logs/manage.log` 每行加秒级时间戳（新增 `scripts/log_stamp.py`，`local_time` 增加 `local_stamp()`） |
 | **v4.3** | 2026-10-01 | Discord 通知收进配置：新增 `notify.enabled`，**缺省关闭**（原先硬编码一直发） |
 | **v4.2** | 2026-10-01 | 按事件重构调度：开播问候（分享 + 1 条弹幕）、开播点赞（点满停）、下播点亮（分享 + 10 条弹幕，每晚一次）；弹幕/点赞/分享全部可在配置里调 |
@@ -254,7 +255,8 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `scripts/wbi.py` | 点赞接口要用的 WBI 签名 |
 | `scripts/like_room.py` | 点赞进程：点满即停 |
 | `scripts/night_light.py` | 下播点亮：分享 + 连发弹幕，每晚一次 |
-| `scripts/log_stamp.py` | 给日志逐行加 `[YYYY-MM-DD HH:MM:SS]` 前缀，由入口脚本在 `__main__` 里安装 |
+| `scripts/log_stamp.py` | 给日志逐行加 `[YYYY-MM-DD HH:MM:SS]` 前缀并把输出切成行缓冲，由入口脚本在 `__main__` 里安装 |
+| `scripts/log_rotate.py` | 日志归档：隔天的 `.log` 压成 `.gz`（copytruncate），只保留最近 30 天 |
 | `run_manage.bat` | 无窗口运行器，由计划任务每 5 分钟调用 |
 | `asoul_ctl.py` | 开关 / 状态控制台 |
 | `.state/locks/` | 挂机进程锁（运行时生成，已 gitignore） |
@@ -263,7 +265,7 @@ python3 scripts/videos.py --days 7 --coin --fav
 | `.state/night_light/` | 下播点亮进度，按天存（运行时生成，已 gitignore） |
 | `.state/greetings/` | 开播问候记录，按天存，防止进程重启后重复问候（运行时生成，已 gitignore） |
 | `.state/buvid3.txt` | 设备指纹 cookie，自动获取并复用（运行时生成，已 gitignore） |
-| `logs/` | 运行日志（已 gitignore）。`manage.log` 由计划任务的追加重定向而来，**每行都带秒级时间戳** |
+| `logs/` | 运行日志（已 gitignore）。`manage.log` 是每轮巡检的输出，`<成员>.log` 是该成员的挂机 + 点赞合并输出，**每行都带秒级时间戳**；跨零点自动归档成 `<名字>.<日期>.log.gz`，只保留最近 30 天 |
 
 ### 配置示例
 
@@ -322,11 +324,20 @@ python3 scripts/videos.py --days 7 --coin --fav
 所有开关的状态每轮巡检都会写进日志（`配置中已关闭：弹幕、点赞`），
 所以"开了没反应"时先看日志，不用怀疑程序坏了。
 
-`logs/manage.log` 的每一行都带 `[2026-10-02 22:58:25]` 这样的秒级时间戳，
+`logs/` 下每个文件（`manage.log` 与各成员的 `<成员>.log`）的每一行都带
+`[2026-10-02 22:58:25]` 这样的秒级时间戳，
 时间取 `local_time`（Windows 上走 `GetLocalTime`，不受 Git Bash 的 TZ=UTC 影响）。
-时间戳由各入口脚本自己在 `__main__` 里装（`scripts/log_stamp.py`）——
+时间戳与行缓冲由各入口脚本自己在 `__main__` 里装（`scripts/log_stamp.py`）——
 子进程继承的是文件描述符，不经过父进程的 Python 层包装，所以
-`night_light.py` 被 manage 调起时也会给自己装一遍。
+`heartbeat.py` / `like_room.py` / `night_light.py` 被 manage 调起时都会各自装一遍。
+行缓冲同样必要：重定向到文件时 Python 默认按 8KB 块缓冲，挂机进程每 60 秒打一行
+却要攒满一整块才落盘，日志会长时间停在旧内容上。
+
+日志跨过零点后由 manage 顺手归档：昨天的 `.log` 压成 `<名字>.<日期>.log.gz`，
+超过 30 天的归档删掉（`scripts/log_rotate.py`，纯标准库，不依赖 logrotate / cron）。
+归档走的是 copytruncate，不是改名——`manage.log` 的 fd 在 systemd 手里、
+成员日志的 fd 在挂机子进程手里，改名之后它们会继续写进那个已改名的 inode，
+新建的同名文件永远是空的。
 
 > ⚠️ 弹幕有频率限制，实测阈值在 1~3 秒之间：间隔 3 秒能过、1 秒就返回
 > `10030 频率过快`。默认 `min: 3` 没有余量，觉得不稳就调到 4。
@@ -358,10 +369,12 @@ python asoul_ctl.py run --ignore-window   # 忽略时段限制强制跑一次
 
    | 进程 | 锁 | 日志 |
    |------|-----|------|
-   | `heartbeat.py --until-offline --members <成员>` | `.state/locks/<房间号>.lock` | `logs/heartbeat_<成员>_<时间戳>.log` |
-   | `like_room.py --members <成员>` | `.state/like_locks/<房间号>.lock` | `logs/like_<成员>_<时间戳>.log` |
+   | `heartbeat.py --until-offline --members <成员>` | `.state/locks/<房间号>.lock` | `logs/<成员>.log` |
+   | `like_room.py --members <成员>` | `.state/like_locks/<房间号>.lock` | `logs/<成员>.log` |
 
-   已点满的房间不会重复拉起点赞进程；**没在播**的成员则两个进程都杀掉并删锁；
+   两个进程**共用同一个日志文件**（追加写）：同一个主播的挂机与点赞按时间顺序落在
+   同一处，翻日志时不必在几个文件之间对时间。已点满的房间不会重复拉起点赞进程；
+   **没在播**的成员则两个进程都杀掉并删锁；
 4. **过了 `night_light.after_hour`**，不管在不在时段内都再查一次下播点亮——
    挂了机也照查，只要有成员没在播。全员还在播就跳过，不起子进程。
 

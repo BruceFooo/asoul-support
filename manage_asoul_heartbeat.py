@@ -7,6 +7,7 @@ Checks live status and manages heartbeat processes with proper locking.
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -20,6 +21,7 @@ os.chdir(asoul_support_dir)
 
 # 共享配置模块在 scripts/ 下（与 check_auth.py 同级），项目根不在默认搜索路径里
 sys.path.insert(0, str(asoul_support_dir / "scripts"))
+import log_rotate  # noqa: E402
 import log_stamp  # noqa: E402
 from asoul_members import ConfigError, load_config, load_members  # noqa: E402
 from local_time import in_active_window, local_hour  # noqa: E402
@@ -91,12 +93,29 @@ def _live_pid(lock_file: Path) -> Optional[int]:
     return None
 
 
-def start_locked(cmd: List[str], lock_file: Path, log_stem: str) -> int:
-    """在锁的保护下启动一个后台脚本，已在跑就复用。返回进程 PID。"""
+_UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def member_log(member_name: str) -> Path:
+    """成员日志路径：一个成员一个文件，挂机与点赞都往这里写。
+
+    成员名直接当文件名，所以先把路径分隔符一类的字符换掉——配置里多写一个 `/`
+    就会把日志写到 logs/ 外面去。
+    """
+    safe = _UNSAFE_FILENAME.sub("_", member_name).strip() or "unknown"
+    return LOG_DIR / f"{safe}.log"
+
+
+def start_locked(cmd: List[str], lock_file: Path, member_name: str) -> int:
+    """在锁的保护下启动一个后台脚本，已在跑就复用。返回进程 PID。
+
+    追加而不是新建：同一成员的挂机与点赞共用一个 `logs/<成员>.log`，
+    两边各自的 log_stamp 给行首加时间戳，翻日志时不必在几个文件之间对时间。
+    """
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
-    log_file = LOG_DIR / f"{log_stem}_{int(time.time())}.log"
-    with open(log_file, "w") as f:
+    log_file = member_log(member_name)
+    with open(log_file, "a", encoding="utf-8") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
     lock_file.write_text(str(proc.pid))
     print(f"    日志 -> {log_file}")
@@ -166,7 +185,7 @@ def start_heartbeat(member: dict) -> Optional[int]:
         return pid
 
     cmd = [sys.executable, "scripts/heartbeat.py", "--until-offline", "--members", name]
-    pid = start_locked(cmd, lock_file, f"heartbeat_{name}")
+    pid = start_locked(cmd, lock_file, name)
     print(f"  {name}: 启动挂机进程，PID {pid}")
     return pid
 
@@ -193,7 +212,7 @@ def start_like(member: dict, settings: dict) -> Optional[int]:
         return None
 
     cmd = [sys.executable, LIKE_SCRIPT, "--members", name]
-    pid = start_locked(cmd, lock_file, f"like_{name}")
+    pid = start_locked(cmd, lock_file, name)
     print(f"  {name}: 启动点赞进程，PID {pid}")
     return pid
 
@@ -252,6 +271,12 @@ def parse_args():
 
 def main() -> int:
     args = parse_args()
+
+    # 顺手归档：跨过零点后把昨天的日志压成 .gz，并清掉超过 30 天的归档。
+    # 放在最前面——此时今天还没写过 manage.log，它的 mtime 仍属于昨天，
+    # 归档能干净地整块收进昨天的日期里。copytruncate 的缘由见 log_rotate。
+    for action in log_rotate.rotate(LOG_DIR):
+        print(f"  🗄  {action}")
 
     if not COOKIE_FILE.exists():
         print("ERROR: .cookies.json not found. Exiting.")

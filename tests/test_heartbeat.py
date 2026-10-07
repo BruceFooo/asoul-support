@@ -267,5 +267,22 @@ class NotifyTests(unittest.TestCase):
         self.notify({"notify": {"enabled": True}})
 
 
+class DataChannelArgvTests(unittest.TestCase):
+    """manage 靠 `--check-only --json` 的 stdout 判断谁在播。
+
+    一旦给这个 stdout 加上时间戳前缀，`json.loads` 就会失败、在播名单恒为空，
+    挂机再也不会被拉起来——而且日志里只像"没人开播"，很难看出是坏了。
+    """
+
+    def test_check_only_json_is_a_data_channel(self):
+        self.assertTrue(heartbeat.stdout_is_a_data_channel(
+            ["heartbeat.py", "--check-only", "--json"]))
+
+    def test_ranking_run_is_a_log_channel(self):
+        """真正挂机那趟的 stdout 是记进 logs/<成员>.log 的人读输出，要加时间戳。"""
+        self.assertFalse(heartbeat.stdout_is_a_data_channel(
+            ["heartbeat.py", "--until-offline", "--members", "枯水"]))
+
+
 if __name__ == "__main__":
     unittest.main()

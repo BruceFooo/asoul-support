@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from asoul_members import ConfigError, load_members, load_settings  # noqa: E402
 from live_api import LiveClient, load_cookies  # noqa: E402
 from local_time import local_date  # noqa: E402
+import log_stamp  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / ".state" / "likes"
@@ -203,4 +204,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 输出被 manage 追加进 logs/<成员>.log：父进程的时间戳包装管不到子进程，
+    # 这里自己装一遍，否则点赞进度会是没有时间前缀的孤儿
+    log_stamp.install()
     raise SystemExit(main())
